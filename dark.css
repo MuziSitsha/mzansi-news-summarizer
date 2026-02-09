@@ -1,0 +1,223 @@
+/* Dark theme (default). Light overrides live in light.css via [data-theme="light"]. */
+:root{
+  --mz-bg: #0b0f14;
+  --mz-surface: rgba(255,255,255,.06);
+  --mz-surface-2: rgba(255,255,255,.085);
+  --mz-border: rgba(255,255,255,.14);
+  --mz-text: rgba(255,255,255,.92);
+  --mz-muted: rgba(255,255,255,.68);
+  --mz-shadow: 0 12px 30px rgba(0,0,0,.45);
+
+  /* South Africa flag-inspired palette */
+  --mz-green: #007A33;
+  --mz-gold:  #FFB81C;
+  --mz-red:   #E03C31;
+  --mz-blue:  #003DA5;
+}
+
+html, body{background: var(--mz-bg) !important;}
+
+/* Centered layout like the screenshots */
+.gradio-container{
+  max-width: 1120px !important;
+  margin: 0 auto !important;
+  padding: 18px 18px 28px !important;
+}
+
+/* Watermark softer on dark */
+.gradio-container::before{opacity:.55;}
+
+/* TOPBAR */
+.mz-topbar{
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px !important;
+  border: 1px solid rgba(255,255,255,.10) !important;
+  background:
+    radial-gradient(800px 260px at 50% 0%, rgba(255,184,28,.18), transparent 55%),
+    linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)) !important;
+  box-shadow: var(--mz-shadow);
+  padding: 16px 18px !important;
+  min-height: 78px;
+  justify-content: flex-end !important;
+}
+
+/* Hide the small brand/flag; the bar itself becomes the hero */
+.mz-topbar .mz-brand{display:none;}
+.mz-topbar .mz-flag{display:none;}
+
+/* Chevron accent (approx SA flag chevron) */
+.mz-topbar::before{
+  content: "";
+  position: absolute;
+  inset: -10px 0 auto 0;
+  height: 130px;
+  pointer-events: none;
+  opacity: .95;
+  background-repeat: no-repeat;
+  background-position: center 6px;
+  background-size: 520px 120px;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 520 120'%3E%3Crect width='520' height='120' fill='none'/%3E%3Cpolygon points='165,0 355,0 430,60 355,120 165,120 240,60' fill='%23FFB81C'/%3E%3Cpolygon points='185,10 335,10 400,60 335,110 185,110 250,60' fill='%23007A33'/%3E%3Cpolygon points='205,20 315,20 370,60 315,100 205,100 260,60' fill='%23101418'/%3E%3C/svg%3E");
+}
+
+/* Bottom flag stripe */
+.mz-topbar::after{
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 10px;
+  height: 9px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg,
+      var(--mz-green) 0 18%,
+      var(--mz-red) 18% 36%,
+      var(--mz-gold) 36% 78%,
+      var(--mz-blue) 78% 100%
+    );
+  opacity: .95;
+}
+
+/* Theme toggle button styled as a switch */
+#mz-theme-toggle{
+  margin-left: auto !important;
+  position: relative;
+  border-radius: 999px !important;
+  border: 1px solid rgba(255,255,255,.16) !important;
+  background: rgba(255,255,255,.08) !important;
+  color: rgba(255,255,255,.92) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 10px 22px rgba(0,0,0,.35);
+  padding: 10px 16px 10px 46px !important;
+  min-height: 42px;
+}
+#mz-theme-toggle::after{
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  width: 22px;
+  height: 22px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255,184,28,1), rgba(230,150,0,1));
+  box-shadow: 0 8px 14px rgba(0,0,0,.35);
+}
+
+/* Tabs: pill-like, with colored underlines */
+[role="tablist"]{
+  gap: 10px !important;
+  padding: 10px 10px 14px !important;
+  border-radius: 16px !important;
+  border: 1px solid rgba(255,255,255,.10) !important;
+  background: rgba(255,255,255,.04) !important;
+  box-shadow: var(--mz-shadow);
+}
+
+[role="tablist"] button[role="tab"]{
+  position: relative;
+  border-radius: 14px !important;
+  padding: 12px 16px !important;
+  font-weight: 800 !important;
+  color: rgba(255,255,255,.90) !important;
+  background: rgba(255,255,255,.03) !important;
+  border: 1px solid rgba(255,255,255,.08) !important;
+  overflow: hidden;
+}
+
+[role="tablist"] button[role="tab"]::after{
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5px;
+  opacity: .95;
+}
+
+[role="tablist"] button[role="tab"]:nth-child(1)::after{background: var(--mz-green);}
+[role="tablist"] button[role="tab"]:nth-child(2)::after{background: var(--mz-red);}
+[role="tablist"] button[role="tab"]:nth-child(3)::after{background: var(--mz-gold);}
+
+[role="tablist"] button[role="tab"][aria-selected="true"]{
+  background: rgba(255,255,255,.06) !important;
+  border-color: rgba(255,255,255,.14) !important;
+}
+
+/* Cards + form elements */
+.card,
+.meta-card{
+  border: 1px solid rgba(255,255,255,.10) !important;
+  border-radius: 18px !important;
+  background: rgba(255,255,255,.05) !important;
+  box-shadow: var(--mz-shadow);
+}
+
+.gr-text-input,
+.gr-number,
+.gr-dropdown,
+.gr-dataframe,
+.gr-markdown,
+.gr-html,
+.gr-form{
+  border-radius: 18px !important;
+}
+
+.gr-text-input textarea,
+.gr-text-input input{
+  background: rgba(255,255,255,.04) !important;
+  border: 1px solid rgba(255,255,255,.10) !important;
+  color: var(--mz-text) !important;
+  border-radius: 16px !important;
+}
+
+/* Optional utility aliases (requested classes) */
+.pill,
+.mz-pill{border-radius:999px;}
+.mz-trends-bar{height:100%;border-radius:14px;}
+
+/* Trends — screenshot-style bars */
+.mz-trends{margin-top: 6px;}
+.mz-trends .trend-row{margin: 12px 0;}
+.mz-trends .trend-bar{
+  position: relative;
+  height: 44px;
+  border-radius: 14px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.10);
+  overflow: hidden;
+}
+.mz-trends .trend-fill{
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border-radius: 14px;
+  filter: saturate(1.05);
+}
+.mz-trends .trend-label{
+  font-weight: 900;
+  letter-spacing: .1px;
+  color: rgba(255,255,255,.92);
+  text-shadow: 0 2px 10px rgba(0,0,0,.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mz-trends .trend-pct{
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-weight: 900;
+  color: rgba(255,255,255,.82);
+  text-shadow: 0 2px 10px rgba(0,0,0,.45);
+}
+
+/* Fill gradients to match the screenshot feel */
+.mz-trends .c0{background: linear-gradient(90deg, rgba(0,122,51,1), rgba(0,90,40,1));}
+.mz-trends .c1{background: linear-gradient(90deg, rgba(255,184,28,1), rgba(210,145,0,1));}
+.mz-trends .c2{background: linear-gradient(90deg, rgba(224,60,49,1), rgba(160,30,25,1));}
+.mz-trends .c3{background: linear-gradient(90deg, rgba(0,61,165,1), rgba(0,45,120,1));}

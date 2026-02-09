@@ -1,0 +1,98 @@
+/* Light mode overrides. Toggle via: document.documentElement.dataset.theme = 'light' */
+:root[data-theme="light"]{
+  --mz-bg: #f6f7fb;
+  --mz-surface: rgba(0,0,0,.03);
+  --mz-surface-2: rgba(0,0,0,.045);
+  --mz-border: rgba(0,0,0,.10);
+  --mz-text: rgba(0,0,0,.90);
+  --mz-muted: rgba(0,0,0,.56);
+  --mz-shadow: 0 14px 34px rgba(15, 20, 30, .12);
+
+  /* Keep SA palette vivid on light */
+  --mz-green: #007A33;
+  --mz-gold:  #FFB81C;
+  --mz-red:   #D8352A;
+  --mz-blue:  #003DA5;
+}
+
+:root[data-theme="light"] .gradio-container::before{opacity:.12;}
+
+:root[data-theme="light"] html,
+:root[data-theme="light"] body{background: var(--mz-bg) !important;}
+
+:root[data-theme="light"] .gradio-container{
+  max-width: 1120px !important;
+  margin: 0 auto !important;
+  padding: 18px 18px 28px !important;
+}
+
+:root[data-theme="light"] .mz-topbar{
+  border-color: rgba(0,0,0,.08) !important;
+  background:
+    radial-gradient(800px 260px at 50% 0%, rgba(255,184,28,.22), transparent 58%),
+    linear-gradient(180deg, rgba(255,255,255,1), rgba(255,255,255,.92)) !important;
+  box-shadow: var(--mz-shadow);
+}
+
+:root[data-theme="light"] .mz-topbar::after{
+  opacity: 1;
+}
+
+/* Move switch knob to the right on light */
+:root[data-theme="light"] #mz-theme-toggle{
+  border-color: rgba(0,0,0,.10) !important;
+  background: rgba(255,255,255,.92) !important;
+  color: rgba(0,0,0,.78) !important;
+  box-shadow: var(--mz-shadow);
+  padding: 10px 46px 10px 16px !important;
+}
+:root[data-theme="light"] #mz-theme-toggle::after{
+  left: auto;
+  right: 12px;
+  box-shadow: 0 10px 18px rgba(15, 20, 30, .18);
+}
+
+:root[data-theme="light"] button.primary,
+:root[data-theme="light"] .gr-button-primary{
+  border-color: rgba(0,0,0,.15) !important;
+}
+
+:root[data-theme="light"] .meta-card,
+:root[data-theme="light"] .card{
+  background: rgba(255,255,255,.92) !important;
+  border-color: rgba(0,0,0,.08) !important;
+  box-shadow: var(--mz-shadow);
+}
+
+:root[data-theme="light"] .meta-row strong{color: rgba(0,0,0,.72);}
+
+:root[data-theme="light"] .mz-pill,
+:root[data-theme="light"] .pill{
+  border-color: rgba(0,0,0,.14);
+  color: rgba(0,0,0,.82);
+}
+
+:root[data-theme="light"] .mz-pill-gray{background: rgba(0,0,0,.04); border-color: rgba(0,0,0,.10); color: var(--mz-muted);}
+
+:root[data-theme="light"] .mz-trends .trend-bar{background: rgba(0,0,0,.035); border-color: rgba(0,0,0,.08);}
+
+/* Tabs: light pill look */
+:root[data-theme="light"] [role="tablist"]{
+  background: rgba(255,255,255,.92) !important;
+  border-color: rgba(0,0,0,.08) !important;
+  box-shadow: var(--mz-shadow);
+}
+
+:root[data-theme="light"] [role="tablist"] button[role="tab"]{
+  color: rgba(0,0,0,.84) !important;
+  background: rgba(0,0,0,.02) !important;
+  border-color: rgba(0,0,0,.06) !important;
+}
+
+:root[data-theme="light"] [role="tablist"] button[role="tab"][aria-selected="true"]{
+  background: rgba(255,255,255,.96) !important;
+  border-color: rgba(0,0,0,.10) !important;
+}
+
+/* Slightly darker blockquote surface on light */
+:root[data-theme="light"] blockquote{background: rgba(0,0,0,.03);}

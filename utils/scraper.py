@@ -54,6 +54,33 @@ _USER_AGENTS = [
 ]
 
 
+_INVALID_UNICODE_ESCAPE_RE = re.compile(r"\\u(?![0-9a-fA-F]{4})")
+_INVALID_JSON_ESCAPE_RE = re.compile(r"\\(?![\"\\/bfnrtu])")
+
+
+def _sanitize_json_escapes(raw: str) -> str:
+    if not raw:
+        return raw
+    fixed = _INVALID_UNICODE_ESCAPE_RE.sub(r"\\\\u", raw)
+    fixed = _INVALID_JSON_ESCAPE_RE.sub(r"\\\\", fixed)
+    return fixed
+
+
+def _safe_json_loads(raw: str):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = _sanitize_json_escapes(raw)
+        if cleaned == raw:
+            return None
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
 def _pick_headers() -> dict:
     ua = random.choice(_USER_AGENTS)
     return {
@@ -141,9 +168,8 @@ def _extract_jsonld_metadata(soup: BeautifulSoup) -> dict:
         raw = script.string
         if not raw:
             continue
-        try:
-            data = json.loads(raw)
-        except Exception:
+        data = _safe_json_loads(raw)
+        if data is None:
             continue
 
         candidates = data if isinstance(data, list) else [data]
@@ -428,9 +454,8 @@ def _extract_jsonld_article_body(soup: BeautifulSoup) -> str:
         raw = script.string
         if not raw:
             continue
-        try:
-            data = json.loads(raw)
-        except Exception:
+        data = _safe_json_loads(raw)
+        if data is None:
             continue
 
         # JSON-LD can be a dict or a list of dicts.

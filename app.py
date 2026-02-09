@@ -77,19 +77,27 @@ RSS_LIMIT_DEFAULT = int(os.environ.get("RSS_LIMIT_DEFAULT", "15"))
 # A small curated starter set; users can always paste a custom RSS URL.
 RSS_SOURCES = {
     "SABC News": "https://www.sabcnews.com/sabcnews/feed/",
-    "News24 (via Google News)": "https://news.google.com/rss/search?q=site:news24.com&hl=en-ZA&gl=ZA&ceid=ZA:en",
+    "News24 (via Google News)": (
+        "https://news.google.com/rss/search?q=site:news24.com&hl=en-ZA&gl=ZA&ceid=ZA:en"
+        "||https://news.google.com/rss/search?q=news24%20south%20africa&hl=en-ZA&gl=ZA&ceid=ZA:en"
+    ),
     "Daily Maverick": "https://www.dailymaverick.co.za/rss/",
     "eNCA": "https://www.enca.com/rss.xml",
 
     # Sport / football (SA-focused sources + a reliable fallback)
     "iDiski Times": "https://www.idiskitimes.co.za/feed/",
     "FarPost (via Google News)": "https://news.google.com/rss/search?q=site:farpost.co.za&hl=en-ZA&gl=ZA&ceid=ZA:en",
-    "Goal.com (via Google News)": "https://news.google.com/rss/search?q=site:goal.com%20soccer&hl=en-ZA&gl=ZA&ceid=ZA:en",
+    "Goal.com (via Google News)": (
+        "https://news.google.com/rss/search?q=site:goal.com%20soccer&hl=en-ZA&gl=ZA&ceid=ZA:en"
+        "||https://news.google.com/rss/search?q=goal.com%20soccer&hl=en-ZA&gl=ZA&ceid=ZA:en"
+    ),
 
     "Google News (South Africa)": "https://news.google.com/rss?hl=en-ZA&gl=ZA&ceid=ZA:en",
     "MyBroadband": "https://mybroadband.co.za/news/feed",
     "BusinessTech": "https://businesstech.co.za/news/feed/",
 }
+
+RSS_TRENDS_AGG_LABEL = "All SA RSS (Aggregated)"
 
 # South Africa official languages (11). We generate the summary in English, and
 # optionally translate it for display.
@@ -267,6 +275,118 @@ _TRANSLATION_CACHE = make_cache(
 
 TRENDS_WINDOW_ARTICLES = int(os.environ.get("TRENDS_WINDOW_ARTICLES", "50"))
 TRENDS_TOP_N_DEFAULT = int(os.environ.get("TRENDS_TOP_N", "10"))
+
+_RSS_TRENDS_LOCK = threading.Lock()
+_RSS_TRENDS_ENTRIES: list[dict] = []
+_RSS_TRENDS_UPDATED_UTC: datetime | None = None
+_RSS_TRENDS_SOURCE: str = ""
+_RSS_TRENDS_STATUS: str = ""
+_RSS_PREFETCH_LOCK = threading.Lock()
+_RSS_PREFETCH_INFLIGHT = False
+_RSS_PREFETCH_LAST_UTC: datetime | None = None
+RSS_PREFETCH_TTL_S = float(os.environ.get("RSS_PREFETCH_TTL_S", "300"))
+
+_TREND_STOPWORDS = {
+    "a",
+    "about",
+    "after",
+    "again",
+    "all",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "before",
+    "but",
+    "by",
+    "can",
+    "could",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "he",
+    "her",
+    "his",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "latest",
+    "live",
+    "more",
+    "new",
+    "news",
+    "not",
+    "of",
+    "on",
+    "or",
+    "our",
+    "out",
+    "over",
+    "s",
+    "says",
+    "she",
+    "so",
+    "south",
+    "africa",
+    "african",
+    "sa",
+    "the",
+    "their",
+    "them",
+    "they",
+    "this",
+    "to",
+    "today",
+    "was",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "with",
+    "you",
+    "your",
+}
+
+_TREND_SHORT_ALLOW = {
+    "anc",
+    "da",
+    "eff",
+    "mk",
+    "sabc",
+    "saps",
+    "siu",
+    "sars",
+    "prasa",
+    "afriforum",
+    "boks",
+}
+
+_TREND_SOURCE_TOKENS = {
+    "news24",
+    "goal",
+    "farpost",
+    "idiski",
+    "sabc",
+    "enca",
+    "maverick",
+    "mybroadband",
+    "businesstech",
+    "iol",
+    "com",
+    "co",
+    "za",
+    "org",
+    "net",
+}
 
 
 class TrendsStore:
@@ -611,6 +731,10 @@ def _translate_summary_with_model(summary_en: str, model_id: str, task: str) -> 
         return out
 
 
+def _get_nllb():
+    return _get_nllb_model(NLLB_MODEL_NAME)
+
+
 @lru_cache(maxsize=2)
 def _get_nllb_model(model_name: str):
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -890,6 +1014,15 @@ button.primary, .gr-button-primary{
 .mz-trends .c2{background: var(--mz-red);}
 .mz-trends .c3{background: var(--mz-blue);}
 
+.mz-trend-grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:12px;margin-top:8px;}
+.mz-trend-tile{padding:12px;border-radius:12px;border:1px solid var(--mz-border);background:rgba(255,255,255,.05);}
+.mz-trend-tile h4{margin:0 0 8px 0;font-size:14px;display:flex;align-items:center;gap:6px;}
+.mz-trend-count{font-size:11px;color:var(--mz-muted);}
+.mz-trend-headline{font-size:12px;color:var(--mz-text);line-height:1.3;margin:0 0 6px 0;}
+.mz-trend-headline a{color:inherit;text-decoration:none;}
+.mz-trend-headline a:hover{text-decoration:underline;}
+.mz-trend-meta{font-size:11px;color:var(--mz-muted);}
+
 /* Quotes */
 blockquote{border-left: 3px solid var(--mz-gold); margin: 10px 0; padding: 8px 12px; background: rgba(255,255,255,.05); border-radius: 10px;}
 .quote-label{color: var(--mz-muted);font-size: 12px;}
@@ -1103,7 +1236,7 @@ def _is_valid_http_url(value: str) -> bool:
         return False
 
 
-def _fetch_rss(url: str, limit: int = RSS_LIMIT_DEFAULT):
+def _fetch_rss_single(url: str, limit: int = RSS_LIMIT_DEFAULT):
     url = (url or "").strip()
     if not _is_valid_http_url(url):
         return "Invalid RSS URL. Please enter a valid http(s) URL.", []
@@ -1146,6 +1279,70 @@ def _fetch_rss(url: str, limit: int = RSS_LIMIT_DEFAULT):
     return status, entries
 
 
+def _fetch_rss(url: str, limit: int = RSS_LIMIT_DEFAULT):
+    raw = (url or "").strip()
+    if not raw:
+        return "Invalid RSS URL. Please enter a valid http(s) URL.", []
+
+    urls = [u.strip() for u in raw.split("||") if u.strip()]
+    if not urls:
+        return "Invalid RSS URL. Please enter a valid http(s) URL.", []
+
+    last_status = ""
+    for u in urls:
+        status, entries = _fetch_rss_single(u, limit)
+        last_status = status
+        if entries:
+            if len(urls) > 1 and u != urls[0]:
+                status = f"{status} (Fallback feed)"
+            return status, entries
+
+    return last_status or "Could not load RSS feed.", []
+
+
+def _aggregate_rss_entries(source_keys: list[str], window_limit: int) -> tuple[str, list[dict]]:
+    keys = [k for k in source_keys if k in RSS_SOURCES]
+    if not keys:
+        return "No RSS sources configured.", []
+
+    per_source = max(5, int((int(window_limit) + len(keys) - 1) / len(keys)))
+    entries: list[dict] = []
+    statuses: list[str] = []
+    for key in keys:
+        url = RSS_SOURCES.get(key, "")
+        status, items = _fetch_rss(url, per_source)
+        statuses.append(f"{key}: {status}")
+        for item in items:
+            entry = dict(item)
+            entry["source"] = key
+            entries.append(entry)
+
+    seen = set()
+    deduped: list[dict] = []
+    for item in entries:
+        title = (item.get("title") or "").strip().lower()
+        link = (item.get("link") or "").strip().lower()
+        key = (title, link)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    def _sort_key(item: dict):
+        published = (item.get("published") or "").strip()
+        dt = _parse_published_datetime(published)
+        if dt:
+            return dt
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    deduped.sort(key=_sort_key, reverse=True)
+    window = max(1, int(window_limit))
+    return (
+        f"Aggregated {len(keys)} sources; showing {min(window, len(deduped))} headlines.",
+        deduped[:window],
+    )
+
+
 def _render_headlines_markdown(entries):
     if not entries:
         return "No headlines yet."
@@ -1162,6 +1359,351 @@ def _render_headlines_markdown(entries):
             line += f"  \n   _{published}_"
         lines.append(line)
     return "\n\n".join(lines)
+
+
+def _render_headlines_html(entries):
+    if not entries:
+        return "<div class=\"headline-list\"><div class=\"headline-meta\">No headlines yet.</div></div>"
+    rows: list[str] = ["<div class=\"headline-list\">"]
+    for item in entries:
+        title = (item.get("title") or "(untitled)").replace("\n", " ").strip()
+        link = (item.get("link") or "").strip()
+        published = (item.get("published") or "").strip()
+        source = ""
+        if link and _is_valid_http_url(link):
+            source = (urlparse(link).netloc or "").strip()
+
+        title_html = html.escape(title)
+        meta_bits = []
+        if source:
+            meta_bits.append(html.escape(source))
+        if published:
+            meta_bits.append(html.escape(published))
+        meta_html = " · ".join(meta_bits) if meta_bits else ""
+
+        if link and _is_valid_http_url(link):
+            title_block = f"<a href=\"{html.escape(link)}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"headline-item\">{title_html}</a>"
+        else:
+            title_block = f"<div class=\"headline-item\">{title_html}</div>"
+
+        rows.append("<div class=\"headline-row\">")
+        rows.append(title_block)
+        if meta_html:
+            rows.append(f"<div class=\"headline-meta\">{meta_html}</div>")
+        rows.append("</div>")
+
+    rows.append("</div>")
+    return "".join(rows)
+
+
+def _render_trend_tiles(
+    top: list[tuple[str, int]],
+    entries: list[dict],
+    *,
+    source_label: str,
+    updated_s: str,
+    per_tile: int = 2,
+) -> str:
+    header = f"Trending ({html.escape(source_label)})"
+    if updated_s:
+        header += f" <span class=\"mz-pill mz-pill-gray\">Updated {html.escape(updated_s)}</span>"
+
+    term_map: dict[str, list[dict]] = {str(tag).lower(): [] for tag, _ in top}
+    for item in entries or []:
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        tokens = set(_tokenize_trend_terms(title))
+        for term in list(term_map.keys()):
+            if term in tokens and len(term_map[term]) < int(per_tile):
+                term_map[term].append(item)
+
+    rows = [
+        f"<div class=\"mz-trends\"><div style=\"font-weight:700;margin:6px 0 10px 0\">{header}</div>",
+        "<div class=\"mz-trend-grid\">",
+    ]
+    for tag, count in top:
+        tag_s = str(tag)
+        tag_html = html.escape(tag_s)
+        count_html = html.escape(str(count))
+        rows.append("<div class=\"mz-trend-tile\">")
+        rows.append(f"<h4>{tag_html}</h4>")
+        rows.append(f"<div class=\"mz-trend-count\">{count_html} mentions</div>")
+        for item in term_map.get(tag_s.lower(), []):
+            title = (item.get("title") or "").strip()
+            link = (item.get("link") or "").strip()
+            published = (item.get("published") or "").strip()
+            source = (item.get("source") or "").strip()
+
+            title_html = html.escape(title or "(untitled)")
+            if link and _is_valid_http_url(link):
+                rows.append(
+                    f"<div class=\"mz-trend-headline\"><a href=\"{html.escape(link)}\" target=\"_blank\" rel=\"noopener noreferrer\">{title_html}</a></div>"
+                )
+            else:
+                rows.append(f"<div class=\"mz-trend-headline\">{title_html}</div>")
+
+            meta_bits = []
+            if source:
+                meta_bits.append(source)
+            if published:
+                meta_bits.append(published)
+            if meta_bits:
+                rows.append(f"<div class=\"mz-trend-meta\">{html.escape(' · '.join(meta_bits))}</div>")
+        rows.append("</div>")
+
+    rows.append("</div></div>")
+    return "".join(rows)
+
+
+def _tokenize_trend_terms(title: str) -> list[str]:
+    if not title:
+        return []
+    tokens = re.findall(r"[A-Za-z][A-Za-z'\-]{1,}", title)
+    out: list[str] = []
+    for tok in tokens:
+        t = tok.strip("-'")
+        if not t:
+            continue
+        low = t.lower()
+        if any(ch.isdigit() for ch in low):
+            continue
+        if low in _TREND_STOPWORDS:
+            continue
+        if low in _TREND_SOURCE_TOKENS:
+            continue
+        if len(low) <= 2 and low not in _TREND_SHORT_ALLOW:
+            continue
+        out.append(low)
+    return out
+
+
+def _extract_trending_terms(entries: list[dict], top_n: int) -> list[tuple[str, int]]:
+    counts: Counter[str] = Counter()
+    display: dict[str, str] = {}
+    for item in entries or []:
+        title = (item.get("title") or "").strip()
+        for term in _tokenize_trend_terms(title):
+            counts[term] += 1
+            if term not in display:
+                display[term] = term.upper() if term in _TREND_SHORT_ALLOW else term.title()
+
+    out: list[tuple[str, int]] = []
+    for term, count in counts.most_common(max(1, int(top_n))):
+        out.append((display.get(term, term.title()), int(count)))
+    return out
+
+
+def _update_rss_trends_cache(entries: list[dict], source: str, status: str) -> None:
+    global _RSS_TRENDS_SOURCE, _RSS_TRENDS_STATUS, _RSS_TRENDS_UPDATED_UTC
+    with _RSS_TRENDS_LOCK:
+        _RSS_TRENDS_ENTRIES.clear()
+        _RSS_TRENDS_ENTRIES.extend(entries or [])
+        _RSS_TRENDS_SOURCE = (source or "").strip()
+        _RSS_TRENDS_STATUS = (status or "").strip()
+        _RSS_TRENDS_UPDATED_UTC = datetime.now(timezone.utc)
+
+
+def _get_rss_trends_cache() -> tuple[list[dict], str, str, datetime | None]:
+    with _RSS_TRENDS_LOCK:
+        entries = list(_RSS_TRENDS_ENTRIES)
+        source = _RSS_TRENDS_SOURCE
+        status = _RSS_TRENDS_STATUS
+        updated = _RSS_TRENDS_UPDATED_UTC
+    return entries, source, status, updated
+
+
+def _prefetch_rss_trends() -> None:
+    global _RSS_PREFETCH_INFLIGHT, _RSS_PREFETCH_LAST_UTC
+    try:
+        source_label = RSS_TRENDS_AGG_LABEL if RSS_SOURCES else ""
+        status, entries = _aggregate_rss_entries(
+            list(RSS_SOURCES.keys()),
+            int(max(10, TRENDS_WINDOW_ARTICLES)),
+        )
+        if entries:
+            _update_rss_trends_cache(entries, source_label, status)
+            _RSS_PREFETCH_LAST_UTC = datetime.now(timezone.utc)
+    finally:
+        _RSS_PREFETCH_INFLIGHT = False
+
+
+def _ensure_rss_prefetch(force: bool = False) -> None:
+    global _RSS_PREFETCH_INFLIGHT
+    if not RSS_SOURCES:
+        return
+    now = datetime.now(timezone.utc)
+    if not force and _RSS_PREFETCH_LAST_UTC is not None:
+        age = now - _RSS_PREFETCH_LAST_UTC
+        if age <= timedelta(seconds=RSS_PREFETCH_TTL_S):
+            return
+    with _RSS_PREFETCH_LOCK:
+        if _RSS_PREFETCH_INFLIGHT:
+            return
+        _RSS_PREFETCH_INFLIGHT = True
+        t = threading.Thread(target=_prefetch_rss_trends, daemon=True)
+        t.start()
+
+
+try:
+    _ensure_rss_prefetch(force=True)
+except Exception:
+    pass
+
+
+_TREND_STOPWORDS = {
+    "a",
+    "about",
+    "after",
+    "against",
+    "all",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "because",
+    "been",
+    "before",
+    "but",
+    "by",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "doing",
+    "down",
+    "during",
+    "each",
+    "for",
+    "from",
+    "has",
+    "have",
+    "having",
+    "he",
+    "her",
+    "here",
+    "hers",
+    "him",
+    "his",
+    "how",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "just",
+    "more",
+    "most",
+    "my",
+    "new",
+    "news",
+    "no",
+    "not",
+    "of",
+    "on",
+    "one",
+    "or",
+    "our",
+    "out",
+    "over",
+    "said",
+    "say",
+    "says",
+    "she",
+    "so",
+    "some",
+    "south",
+    "africa",
+    "sa",
+    "sabc",
+    "sabcnews",
+    "says",
+    "than",
+    "that",
+    "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "they",
+    "this",
+    "to",
+    "today",
+    "under",
+    "up",
+    "us",
+    "was",
+    "we",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "will",
+    "with",
+    "you",
+    "your",
+}
+
+
+def _title_terms(title: str) -> list[str]:
+    raw = (title or "").lower()
+    words = [w for w in re.split(r"[^a-z0-9]+", raw) if w]
+    kept = [w for w in words if len(w) >= 3 and w not in _TREND_STOPWORDS]
+    return kept
+
+
+def _extract_trending_terms(entries: list[dict], top_n: int) -> list[tuple[str, int]]:
+    counter: Counter[str] = Counter()
+    for item in entries or []:
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        terms = _title_terms(title)
+        if not terms:
+            continue
+        bigrams = [f"{terms[i]} {terms[i + 1]}" for i in range(len(terms) - 1)]
+        unique_terms = set(terms + bigrams)
+        counter.update(unique_terms)
+
+    top = counter.most_common(max(1, int(top_n)))
+    return [(t, int(c)) for t, c in top if t and int(c) > 0]
+
+
+def _collect_rss_entries(sources: list[str], per_source: int) -> list[dict]:
+    items: list[dict] = []
+    for source in sources or []:
+        url = RSS_SOURCES.get(source)
+        if not url:
+            continue
+        _, entries = _fetch_rss(url, int(per_source))
+        for entry in entries or []:
+            enriched = dict(entry)
+            enriched["source"] = source
+            items.append(enriched)
+
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for entry in items:
+        key = (entry.get("link") or entry.get("title") or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+
+    def _sort_key(entry: dict) -> datetime:
+        dt = _parse_published_datetime(entry.get("published") or "")
+        return dt if dt else datetime.min.replace(tzinfo=timezone.utc)
+
+    deduped.sort(key=_sort_key, reverse=True)
+    return deduped
 
 
 def _render_sentiment_viz(label: str, score: float) -> str:
@@ -1607,16 +2149,18 @@ with gr.Blocks(
         return nxt, gr.update(value=label)
 
     with gr.Row(elem_classes=["mz-topbar"]):
-        gr.HTML(
-            """
-            <div class="mz-brand">
-              <h1>Mzansi News Summarizer</h1>
-              <p>Summaries, sentiment, and SA-focused insights</p>
-            </div>
-            """
-        )
+        with gr.Column(scale=7, elem_classes=["mz-brand"]):
+            gr.HTML(
+                """
+                <div class="mz-brand">
+                  <h1>Mzansi News Summarizer</h1>
+                  <p>Summaries, sentiment, and SA-focused insights</p>
+                </div>
+                """
+            )
 
-        theme_toggle_btn = gr.Button("Dark Mode", elem_id="mz-theme-toggle")
+        with gr.Column(scale=5, elem_classes=["mz-top-controls"]):
+            theme_toggle_btn = gr.Button("Dark Mode", elem_id="mz-theme-toggle")
 
         gr.HTML(
             """
@@ -1709,7 +2253,7 @@ with gr.Blocks(
                         target_lang = gr.Dropdown(
                             choices=SA_LANGUAGES,
                             value="English",
-                            label="Choose Summary Language (optional)",
+                            label="Choose Summary Language",
                         )
 
                         with gr.Row():
@@ -1738,7 +2282,7 @@ with gr.Blocks(
                         summarize_trends_refresh = gr.Button("Refresh Trends", elem_classes="mz-pill mz-pill-gray")
 
                     with gr.Group(elem_classes="meta-card"):
-                        gr.HTML("<h2>Category</h2>")
+                        gr.HTML("<h2 class=\"mz-card-title\">Category <span class=\"mz-chevron\">▾</span></h2>")
                         category_box = gr.HTML()
 
                     with gr.Group(elem_classes="meta-card"):
@@ -1746,50 +2290,42 @@ with gr.Blocks(
                         model_box = gr.Markdown()
 
             def _render_trends_sidebar(top_n: int = 5) -> str:
-                snap = _TRENDS.snapshot(int(top_n), "All")
-                top = snap.get("top", [])
-                window = snap.get("window", TRENDS_WINDOW_ARTICLES)
-                tracked = snap.get("tracked", 0)
-                updated = snap.get("updated_at_utc")
+                source_label = RSS_TRENDS_AGG_LABEL if RSS_SOURCES else ""
+                status, entries = _aggregate_rss_entries(
+                    list(RSS_SOURCES.keys()),
+                    int(max(10, TRENDS_WINDOW_ARTICLES)),
+                )
+
+                updated = None
+                if entries:
+                    _update_rss_trends_cache(entries, source_label, status)
+                    updated = datetime.now(timezone.utc)
+                else:
+                    cached_entries, cached_source, cached_status, cached_updated = _get_rss_trends_cache()
+                    if cached_entries and cached_source == source_label:
+                        entries = cached_entries
+                        status = f"{status} Showing last cached results."
+                        updated = cached_updated
+
                 updated_s = ""
                 if isinstance(updated, datetime):
                     updated_s = updated.strftime("%d %b %Y, %H:%M UTC")
 
+                top = _extract_trending_terms(entries, int(top_n)) if entries else []
                 if not top:
                     return (
                         "<div class=\"mz-trends\">"
                         "<div class=\"mz-pill mz-pill-gray\" style=\"margin-left:0\">No trends yet</div>"
-                        f"<div style=\"margin-top:8px;color:var(--mz-muted)\">Window: last {tracked}/{window} articles</div>"
+                        f"<div style=\"margin-top:8px;color:var(--mz-muted)\">Source: {html.escape(source_label)}</div>"
                         "</div>"
                     )
-
-                max_count = max([int(c) for _, c in top] or [1])
-                header = f"Last {tracked}/{window} articles"
-                if updated_s:
-                    header += f" <span class=\"mz-pill mz-pill-gray\">Updated {html.escape(updated_s)}</span>"
-
-                blocks = [f"<div class=\"mz-trends\"><div style=\"font-weight:700;margin:6px 0 10px 0\">{header}</div>"]
-                for i, (tag, count) in enumerate(top):
-                    try:
-                        c = int(count)
-                    except Exception:
-                        c = 0
-                    pct = 0.0 if max_count <= 0 else max(0.0, min(100.0, (c / max_count) * 100.0))
-                    cls = f"c{i % 4}"
-                    tag_html = html.escape(str(tag))
-                    blocks.append(
-                        "<div class=\"trend-row\">"
-                        f"<div class=\"trend-bar\">"
-                        f"<div class=\"trend-fill mz-trends-bar {cls}\" style=\"width:{pct:.0f}%\">"
-                        f"<span class=\"trend-label\">{tag_html}</span>"
-                        "</div>"
-                        f"<span class=\"trend-pct\">{c}</span>"
-                        "</div>"
-                        "</div>"
-                    )
-
-                blocks.append("</div>")
-                return "".join(blocks)
+                return _render_trend_tiles(
+                    top,
+                    entries,
+                    source_label=source_label,
+                    updated_s=updated_s,
+                    per_tile=1,
+                )
 
             summarize_trends_refresh.click(
                 fn=_render_trends_sidebar,
@@ -1858,7 +2394,7 @@ with gr.Blocks(
                 gr.HTML("<h2>Headlines</h2>")
                 rss_meta = gr.HTML()
                 rss_status = gr.Textbox(label="Status")
-                rss_headlines = gr.Markdown()
+                rss_headlines = gr.HTML()
 
             def load_headlines(selected_source, custom_url, limit):
                 url = (custom_url or "").strip() or RSS_SOURCES.get(selected_source, "")
@@ -1876,7 +2412,7 @@ with gr.Blocks(
                         f"<div class=\"meta-row\"><strong>Feed:</strong> <a href=\"{url_html}\" target=\"_blank\" rel=\"noopener noreferrer\">{url_html}</a></div>"
                     )
                 meta_html = "<div class=\"meta-card card\">" + "".join(meta_lines) + "</div>"
-                return status, _render_headlines_markdown(entries), meta_html
+                return status, _render_headlines_html(entries), meta_html
 
             rss_refresh.click(
                 fn=load_headlines,
@@ -1887,8 +2423,15 @@ with gr.Blocks(
         with gr.Tab("What's Hot in SA"):
             gr.Markdown(
                 "## What's Hot in SA\n"
-                "Tracks which Mzansi Lens tags are trending across the most recently processed articles."
+                "A quick newsroom view of the topics gaining momentum right now."
             )
+            gr.HTML(
+                "<div class=\"mz-explain\">"
+                "<strong>How it works:</strong> We analyze recent article summaries and surface the most repeated topics. "
+                "If no summaries exist yet, we fall back to live RSS headlines."
+                "</div>"
+            )
+            trends_heading_meta = gr.HTML()
 
             with gr.Column(elem_classes="meta-card"):
                 trends_group = gr.Dropdown(
@@ -1899,12 +2442,12 @@ with gr.Blocks(
 
                 with gr.Row():
                     top_minus = gr.Button("-", min_width=44)
-                    trends_top_n = gr.Slider(5, 25, value=TRENDS_TOP_N_DEFAULT, step=1, label="Top tags")
+                    trends_top_n = gr.Slider(5, 25, value=TRENDS_TOP_N_DEFAULT, step=1, label="Top topics")
                     top_plus = gr.Button("+", min_width=44)
 
                 with gr.Row():
                     art_minus = gr.Button("-", min_width=44)
-                    trends_article_limit = gr.Slider(5, 50, value=20, step=1, label="Articles to show")
+                    trends_article_limit = gr.Slider(5, 50, value=20, step=1, label="Headlines to show")
                     art_plus = gr.Button("+", min_width=44)
 
                 with gr.Row():
@@ -1915,15 +2458,15 @@ with gr.Blocks(
                 trends_meta = gr.HTML()
                 trends_box = gr.HTML()
                 trends_table = gr.Dataframe(
-                    headers=["Tag", "Count"],
+                    headers=["Topic", "Mentions"],
                     datatype=["str", "number"],
                     row_count=(0, "dynamic"),
                     column_count=(2, "fixed"),
                     interactive=False,
-                    label="Top Tags (click a row to filter)",
+                    label="Top Topics (click a row to filter)",
                 )
 
-                filter_tag = gr.Dropdown(choices=[], value=None, label="Filter by tag")
+                filter_tag = gr.Dropdown(choices=[], value=None, label="Filter by topic")
                 filtered_articles = gr.Markdown()
 
             def _render_trends_ui(top_n: int, article_limit: int, group: str):
@@ -1937,8 +2480,16 @@ with gr.Blocks(
                 if isinstance(updated, datetime):
                     updated_s = updated.strftime("%d %b %Y, %H:%M UTC")
 
+                heading_html = (
+                    "<div class=\"mz-section-head\">"
+                    f"<span class=\"mz-badge\">Source: Mzansi Lens</span>"
+                    f"<span class=\"mz-badge\">Updated {html.escape(updated_s) if updated_s else '—'}</span>"
+                    "</div>"
+                )
+
                 meta_bits = [
                     f"<div class=\"meta-row\"><strong>Category:</strong> {html.escape(g)}</div>",
+                    f"<div class=\"meta-row\"><strong>Source:</strong> Mzansi Lens (summarized articles)</div>",
                     f"<div class=\"meta-row\"><strong>Window:</strong> last {tracked}/{window} articles</div>",
                 ]
                 if updated_s:
@@ -1948,16 +2499,39 @@ with gr.Blocks(
                 meta_html = "<div class=\"meta-card card\">" + "".join(meta_bits) + "</div>"
 
                 if not top:
-                    html_out = (
-                        f"<div class=\"mz-trends\">"
-                        f"<div class=\"mz-pill mz-pill-gray\" style=\"margin-left:0\">No trends yet</div>"
-                        f"<div style=\"margin-top:8px;color:var(--mz-muted)\">Window: last {tracked}/{window} articles</div>"
-                        f"</div>"
+                    _ensure_rss_prefetch()
+                    entries, cached_source, cached_status, cached_updated = _get_rss_trends_cache()
+                    top = _extract_trending_terms(entries, int(top_n)) if entries else []
+                    updated_s = cached_updated.strftime("%d %b %Y, %H:%M UTC") if isinstance(cached_updated, datetime) else ""
+
+                    if not top:
+                        html_out = (
+                            f"<div class=\"mz-trends\">"
+                            f"<div class=\"mz-pill mz-pill-gray\" style=\"margin-left:0\">Loading latest trends...</div>"
+                            f"<div style=\"margin-top:8px;color:var(--mz-muted)\">Window: last {tracked}/{window} articles</div>"
+                            f"</div>"
+                        )
+                        return heading_html, meta_html, html_out, [], gr.update(choices=[], value=None), ""
+
+                    meta_bits = [
+                        f"<div class=\"meta-row\"><strong>Category:</strong> Live RSS (fallback)</div>",
+                        f"<div class=\"meta-row\"><strong>Source:</strong> {html.escape(cached_source or RSS_TRENDS_AGG_LABEL)}</div>",
+                        f"<div class=\"meta-row\"><strong>Headlines scanned:</strong> {len(entries)}</div>",
+                    ]
+                    if updated_s:
+                        meta_bits.append(
+                            f"<div class=\"meta-row\"><strong>Updated:</strong> {html.escape(updated_s)}</div>"
+                        )
+                    meta_html = "<div class=\"meta-card card\">" + "".join(meta_bits) + "</div>"
+                    heading_html = (
+                        "<div class=\"mz-section-head\">"
+                        "<span class=\"mz-badge\">Source: Live RSS</span>"
+                        f"<span class=\"mz-badge\">Updated {html.escape(updated_s) if updated_s else '—'}</span>"
+                        "</div>"
                     )
-                    return meta_html, html_out, [], gr.update(choices=[], value=None), ""
 
                 max_count = max([int(c) for _, c in top] or [1])
-                header = f"Trending ({html.escape(g)}) — last {tracked}/{window} articles"
+                header = f"Trending topics ({html.escape(g)}) — last {tracked}/{window} articles"
                 if updated_s:
                     header += f" <span class=\"mz-pill mz-pill-gray\">Updated {html.escape(updated_s)}</span>"
 
@@ -1992,7 +2566,7 @@ with gr.Blocks(
                 html_out = "".join(blocks)
                 default_tag = tags[0] if tags else None
                 initial_articles = _render_articles_for_tag(default_tag or "", int(article_limit), g) if default_tag else ""
-                return meta_html, html_out, rows, gr.update(choices=tags, value=default_tag), initial_articles
+                return heading_html, meta_html, html_out, rows, gr.update(choices=tags, value=default_tag), initial_articles
 
             def _render_articles_for_tag(tag: str, limit: int, group: str):
                 t = (tag or "").strip()
@@ -2001,9 +2575,31 @@ with gr.Blocks(
                 g = (group or "All").strip() or "All"
                 items = _TRENDS.articles_for_tag(t, int(limit), g)
                 if not items:
+                    entries, _, _, _ = _get_rss_trends_cache()
+                    t_low = t.lower()
+                    fallback_items: list[dict] = []
+                    for item in entries:
+                        title = (item.get("title") or "").strip()
+                        if not title:
+                            continue
+                        if t_low in _tokenize_trend_terms(title):
+                            fallback_items.append(item)
+                        if len(fallback_items) >= int(limit):
+                            break
+                    if fallback_items:
+                        items = [
+                            {
+                                "title": it.get("title"),
+                                "source": it.get("source"),
+                                "url": it.get("link"),
+                                "published": it.get("published"),
+                            }
+                            for it in fallback_items
+                        ]
+                if not items:
                     return f"No matching articles found for **{t}**."
 
-                lines = [f"### Articles mentioning: {t}", ""]
+                lines = [f"### Headlines mentioning: {t}", ""]
                 for i, meta in enumerate(items, start=1):
                     title = (meta.get("title") or "(untitled)").strip()
                     source = (meta.get("source") or "").strip()
@@ -2061,25 +2657,25 @@ with gr.Blocks(
             trends_refresh.click(
                 fn=_render_trends_ui,
                 inputs=[trends_top_n, trends_article_limit, trends_group],
-                outputs=[trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
+                outputs=[trends_heading_meta, trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
             )
             trends_reset.click(
                 fn=_reset_trends_ui,
                 inputs=[trends_top_n, trends_article_limit, trends_group],
-                outputs=[trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
+                outputs=[trends_heading_meta, trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
             )
 
             # Auto-render so the tab is never blank.
             iface.load(
                 fn=_render_trends_ui,
                 inputs=[trends_top_n, trends_article_limit, trends_group],
-                outputs=[trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
+                outputs=[trends_heading_meta, trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
             )
 
             trends_group.change(
                 fn=_render_trends_ui,
                 inputs=[trends_top_n, trends_article_limit, trends_group],
-                outputs=[trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
+                outputs=[trends_heading_meta, trends_meta, trends_box, trends_table, filter_tag, filtered_articles],
             )
 
             # Dropdown filter renders article list.
@@ -2127,9 +2723,10 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     print("Starting Gradio app...")
+    server_port = int(os.environ.get("GRADIO_SERVER_PORT", "7861"))
     iface.launch(
         server_name="127.0.0.1",
-        server_port=7860,
+        server_port=server_port,
         css=APP_CSS,
         theme=gr.themes.Base(),
     )

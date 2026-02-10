@@ -65,6 +65,8 @@ def _configure_transformers_logging() -> None:
 SUMMARY_TIMEOUT_S = float(os.environ.get("SUMMARY_TIMEOUT_S", "35"))
 SUMMARY_MODEL_CHOICE = os.environ.get("SUMMARY_MODEL_CHOICE", "t5")
 MAX_SUMMARY_INPUT_CHARS = int(os.environ.get("MAX_SUMMARY_INPUT_CHARS", "6000"))
+SUMMARY_MAX_LEN = int(os.environ.get("SUMMARY_MAX_LEN", "280"))
+SUMMARY_MIN_LEN = int(os.environ.get("SUMMARY_MIN_LEN", "120"))
 _executor = ThreadPoolExecutor(max_workers=1)
 
 # If the scraped page contains very little actual text (e.g., livestream wrappers
@@ -611,10 +613,17 @@ def _normalize_summary(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return ""
-    t = re.sub(r"^['`]+\s*", "", t)
+    t = re.sub(r"^[\s'`\".,;:!?-]+", "", t)
     t = re.sub(r"^s\s+", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+([,.;:!?])", r"\1", t)
     t = re.sub(r"\s{2,}", " ", t)
+    t = t.strip()
+    if t and t[0].islower():
+        t = t[0].upper() + t[1:]
+    if t and t[-1] not in ".!?":
+        last = max(t.rfind(". "), t.rfind("! "), t.rfind("? "))
+        if last >= int(len(t) * 0.6):
+            t = t[: last + 1].strip()
     return t.strip()
 
 
@@ -1015,9 +1024,19 @@ button.primary, .gr-button-primary{
 .mz-trends .c3{background: var(--mz-blue);}
 
 .mz-trend-grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:12px;margin-top:8px;}
-.mz-trend-tile{padding:12px;border-radius:12px;border:1px solid var(--mz-border);background:rgba(255,255,255,.05);}
+.mz-trend-tile{
+    padding:12px;
+    border-radius:12px;
+    border:2px solid transparent;
+    background:
+        linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)) padding-box,
+        linear-gradient(135deg, rgba(0,122,51,.7), rgba(255,184,28,.7), rgba(224,60,49,.7), rgba(0,61,165,.7)) border-box;
+}
 .mz-trend-tile h4{margin:0 0 8px 0;font-size:14px;display:flex;align-items:center;gap:6px;}
 .mz-trend-count{font-size:11px;color:var(--mz-muted);}
+.mz-trend-mini{position:relative;height:10px;margin:8px 0 10px 0;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);}
+.mz-trend-mini-fill{height:100%;border-radius:999px;}
+.mz-trend-mini-pct{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:700;color:var(--mz-text);}
 .mz-trend-headline{font-size:12px;color:var(--mz-text);line-height:1.3;margin:0 0 6px 0;}
 .mz-trend-headline a{color:inherit;text-decoration:none;}
 .mz-trend-headline a:hover{text-decoration:underline;}
@@ -1048,6 +1067,7 @@ blockquote{border-left: 3px solid var(--mz-gold); margin: 10px 0; padding: 8px 1
 
 # Append theme CSS from file so you can iterate without editing Python.
 APP_CSS = APP_CSS + "\n\n" + _read_local_css("theme.css")
+APP_CSS = APP_CSS + "\n\n" + _read_local_css("light.css")
 
 
 def _render_category_card(topic: str) -> str:
@@ -1066,6 +1086,212 @@ def _render_summary_html(text: str, *, is_error: bool = False) -> str:
         return ""
     cls = "mz-summary mz-summary-error" if is_error else "mz-summary"
     return f"<div class=\"{cls}\">{html.escape(msg)}</div>"
+
+
+_EVIDENCE_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have",
+    "he", "her", "his", "if", "in", "into", "is", "it", "its", "of", "on", "or", "our",
+    "she", "that", "the", "their", "them", "they", "this", "to", "was", "we", "were", "will",
+    "with", "you", "your",
+}
+
+
+def _split_sentences(text: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    return [p.strip() for p in parts if (p or "").strip()]
+
+
+def _shorten_sentence(text: str, max_len: int = 180) -> str:
+    s = (text or "").strip()
+    if len(s) <= max_len:
+        return s
+    cut = s[: max(0, max_len - 1)].rstrip()
+    return cut + "…"
+
+
+def _extract_evidence_sentences(
+    text: str,
+    summary: str,
+    max_sentences: int = 3,
+) -> list[tuple[int, str]]:
+    if not text or not summary:
+        return []
+
+    summary_tokens = re.findall(r"[A-Za-z][A-Za-z\-']{2,}", summary.lower())
+    keywords = [t for t in summary_tokens if t not in _EVIDENCE_STOPWORDS]
+    if not keywords:
+        return []
+
+    sentences = _split_sentences(text)
+    scored: list[tuple[int, int, str]] = []
+    for idx, sent in enumerate(sentences):
+        s = (sent or "").strip()
+        if len(s) < 50 or len(s) > 360:
+            continue
+        s_low = s.lower()
+        score = sum(1 for k in keywords if k in s_low)
+        if score:
+            scored.append((score, idx, s))
+
+    if not scored:
+        return []
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    picked = scored[: max(1, min(max_sentences, 5))]
+    picked.sort(key=lambda x: x[1])
+
+    seen: set[str] = set()
+    out: list[tuple[int, str]] = []
+    for _, idx, s in picked:
+        key = re.sub(r"\W+", "", s.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((idx, _shorten_sentence(s, max_len=180)))
+    return out
+
+
+def _render_evidence_html(sentences: list[tuple[int, str]], source_label: str) -> str:
+    if not sentences:
+        return ""
+    positions = ", ".join([str(idx + 1) for idx, _ in sentences])
+    source = (source_label or "").strip() or "Unknown"
+    items = "".join([f"<li>{html.escape(s)}</li>" for _, s in sentences])
+    return (
+        "<div class=\"mz-evidence\">"
+        "<div class=\"mz-evidence-title\">Evidence highlights</div>"
+        f"<div class=\"mz-evidence-meta\">Source: {html.escape(source)} · Sentences: {html.escape(positions)}</div>"
+        f"<ul>{items}</ul>"
+        "</div>"
+    )
+
+
+def _render_key_facts_html(summary: str, max_items: int = 3) -> str:
+    bullets = _split_sentences(summary)
+    if not bullets:
+        return ""
+    items = []
+    for b in bullets[: max(1, min(max_items, 4))]:
+        items.append(_shorten_sentence(b, max_len=140))
+    li = "".join([f"<li>{html.escape(s)}</li>" for s in items])
+    return (
+        "<div class=\"mz-key-facts\">"
+        "<div class=\"mz-key-facts-title\">Key facts</div>"
+        f"<ul>{li}</ul>"
+        "</div>"
+    )
+
+
+def _pick_issue_group(lens) -> tuple[list[str], list[str], list[str]]:
+    economy_keys = {"Unemployment", "Inflation"}
+    policy_keys = {"Elections", "Corruption"}
+    community_keys = {"Service delivery", "Water outages", "Electricity", "Crime", "GBV", "Healthcare", "Education", "Protests"}
+
+    econ = [i for i in lens.issues if i in economy_keys]
+    policy = [i for i in lens.issues if i in policy_keys]
+    community = [i for i in lens.issues if i in community_keys]
+    return econ, policy, community
+
+
+def _render_sa_impact_html(summary: str, lens) -> str:
+    if not summary:
+        return ""
+
+    econ, policy, community = _pick_issue_group(lens)
+    provinces = ", ".join(lens.provinces[:2]) if lens.provinces else "South Africa"
+    institutions = ", ".join(lens.institutions[:2]) if lens.institutions else "public institutions"
+    parties = ", ".join(lens.parties[:2]) if lens.parties else "government"
+
+    econ_line = (
+        f"Economy: watch for impacts on {', '.join(econ) or 'jobs, prices, and household costs'} in {provinces}."
+    )
+    policy_line = (
+        f"Policy: {parties} and {institutions} may face pressure to respond or clarify." 
+        if (lens.parties or lens.institutions)
+        else "Policy: likely to shape near-term public debate and response."
+    )
+    community_line = (
+        f"Community: effects could be felt through {', '.join(community) or 'service delivery and local services'} in {provinces}."
+    )
+
+    items = "".join([f"<li>{html.escape(s)}</li>" for s in (econ_line, policy_line, community_line)])
+    return (
+        "<div class=\"mz-impact\">"
+        "<div class=\"mz-impact-title\">What this means for SA</div>"
+        f"<ul>{items}</ul>"
+        "</div>"
+    )
+
+
+def _render_stakeholder_views_html(summary: str, lens) -> str:
+    if not summary:
+        return ""
+
+    provinces = ", ".join(lens.provinces[:2]) if lens.provinces else "local communities"
+    institutions = ", ".join(lens.institutions[:2]) if lens.institutions else "public bodies"
+    leaders = ", ".join(lens.leaders[:2]) if lens.leaders else "leaders"
+    economy_focus = "jobs, prices, and stability"
+    community_focus = ", ".join(lens.issues[:2]) if lens.issues else "service delivery"
+
+    citizen = f"Citizen view: how this affects {community_focus} in {provinces}."
+    business = f"Business view: watch for implications on {economy_focus} and regulation signals."
+    policy = f"Policy view: {leaders} and {institutions} may set the next steps or responses."
+
+    return (
+        "<div class=\"mz-stakeholders\">"
+        "<div class=\"mz-stakeholders-title\">Stakeholder views</div>"
+        "<div class=\"mz-stakeholders-grid\">"
+        f"<div class=\"mz-stakeholder\"><div class=\"mz-stakeholder-k\">Citizen</div><div class=\"mz-stakeholder-v\">{html.escape(citizen)}</div></div>"
+        f"<div class=\"mz-stakeholder\"><div class=\"mz-stakeholder-k\">Business</div><div class=\"mz-stakeholder-v\">{html.escape(business)}</div></div>"
+        f"<div class=\"mz-stakeholder\"><div class=\"mz-stakeholder-k\">Policy</div><div class=\"mz-stakeholder-v\">{html.escape(policy)}</div></div>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _render_summary_confidence(
+    text_len: int,
+    *,
+    show_min_hint: bool,
+    scrape_mode: str | None,
+    lang_confident: bool,
+) -> str:
+    score = 0
+    if text_len >= 1800:
+        score += 2
+    elif text_len >= 900:
+        score += 1
+
+    if scrape_mode in {"playwright", "reader-proxy", "bs4", "newspaper3k"}:
+        score += 1
+
+    if lang_confident:
+        score += 1
+
+    if show_min_hint or text_len < 500:
+        score = max(0, score - 2)
+
+    if score >= 3:
+        label = "High"
+        cls = "mz-pill mz-pill-green"
+    elif score >= 2:
+        label = "Medium"
+        cls = "mz-pill mz-pill-gold"
+    else:
+        label = "Low"
+        cls = "mz-pill mz-pill-red"
+
+    note = "Based on length, scrape mode, and language detection"
+    return (
+        "<div class=\"mz-confidence\">"
+        "<span class=\"mz-pill mz-pill-gray\" style=\"margin-left:0\">Summary confidence</span> "
+        f"<span class=\"{cls}\">{label}</span>"
+        f"<span class=\"mz-confidence-note\">{html.escape(note)}</span>"
+        "</div>"
+    )
 
 
 def _render_url_blocked_card(reason: str) -> str:
@@ -1418,17 +1644,27 @@ def _render_trend_tiles(
             if term in tokens and len(term_map[term]) < int(per_tile):
                 term_map[term].append(item)
 
+    max_count = max((count for _, count in top), default=1) or 1
+
     rows = [
         f"<div class=\"mz-trends\"><div style=\"font-weight:700;margin:6px 0 10px 0\">{header}</div>",
         "<div class=\"mz-trend-grid\">",
     ]
-    for tag, count in top:
+    for idx, (tag, count) in enumerate(top):
         tag_s = str(tag)
         tag_html = html.escape(tag_s)
         count_html = html.escape(str(count))
+        pct = int(round((count / max_count) * 100)) if max_count else 0
+        color_class = f"c{idx % 4}"
         rows.append("<div class=\"mz-trend-tile\">")
         rows.append(f"<h4>{tag_html}</h4>")
         rows.append(f"<div class=\"mz-trend-count\">{count_html} mentions</div>")
+        rows.append("<div class=\"mz-trend-mini\">")
+        rows.append(
+            f"<div class=\"mz-trend-mini-fill {color_class}\" style=\"width:{pct}%\"></div>"
+        )
+        rows.append(f"<div class=\"mz-trend-mini-pct\">{pct}%</div>")
+        rows.append("</div>")
         for item in term_map.get(tag_s.lower(), []):
             title = (item.get("title") or "").strip()
             link = (item.get("link") or "").strip()
@@ -1754,6 +1990,7 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
 
     url = (url or "").strip()
     text = (text or "").strip()
+    original_len = len(text)
 
     logger.info(
         "request_start has_url=%s text_len=%d target_lang=%s",
@@ -1765,11 +2002,20 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
     used_url = False
     show_min_text_hint = False
     meta_out = ""
-    model_info = f"Summarization Model: {SUMMARY_MODEL_CHOICE}"
+    model_info = "**Summarization:** loading...\n\n**Sentiment:** loading..."
     sentiment_viz = ""
     topic = "N/A"
     category_html = _render_category_card(topic)
     input_lang_note = ""
+    evidence_html = ""
+    summary_confidence_html = ""
+    key_facts_html = ""
+    sa_impact_html = ""
+    stakeholder_html = ""
+    evidence_source_label = "Pasted text"
+    scrape_mode_raw = ""
+    lang_confident = False
+    scrape_ms: int | None = None
 
     # For Trends dashboard: per-article metadata.
     trends_title = "Pasted text"
@@ -1782,11 +2028,29 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
         trends_url = url
         if not _is_valid_http_url(url):
             logger.warning("invalid_url url=%r", url)
-            return _render_summary_html("Invalid URL. Please enter a valid http(s) URL.", is_error=True), "N/A", 0.0, "N/A", "N/A", "", category_html, "", ""
+            return (
+                key_facts_html,
+                _render_summary_html("Invalid URL. Please enter a valid http(s) URL.", is_error=True),
+                summary_confidence_html,
+                evidence_html,
+                sa_impact_html,
+                stakeholder_html,
+                "N/A",
+                0.0,
+                "N/A",
+                "N/A",
+                "",
+                category_html,
+                "",
+                "",
+                original_len,
+            )
         scrape_t0 = time.perf_counter()
         try:
             text, meta = scrape_article_with_metadata(url, enable_browser_mode=bool(enable_browser_mode))
             text = (text or "").strip()
+            original_len = len(text)
+            scrape_ms = int(round((time.perf_counter() - scrape_t0) * 1000))
             logger.info("scrape_ok ms=%.0f text_len=%d", (time.perf_counter() - scrape_t0) * 1000, len(text))
             if len(text) < MIN_TEXT_HINT_THRESHOLD:
                 show_min_text_hint = True
@@ -1814,6 +2078,7 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
 
             source_label = _pretty_source_label(source)
             trends_source = source_label or source or ""
+            evidence_source_label = source_label or source or "Unknown"
 
             scrape_mode_raw = (meta.get("scrape_mode") or "").strip()
             if scrape_mode_raw == "playwright":
@@ -1884,6 +2149,8 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
             else:
                 cache_label = "Unknown"
             cache_html = html.escape(cache_label)
+            scrape_ms_html = html.escape(f"{scrape_ms} ms") if isinstance(scrape_ms, int) else "<em>Unknown</em>"
+            length_html = html.escape(str(len(text))) if text else "<em>Unknown</em>"
 
             # Responsive metadata card:
             # - Desktop/tablet: multi-line fields
@@ -1892,13 +2159,15 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
                 "<div class=\"meta-card card\">"
                 f"<div class=\"meta-mobile\">{_html_value(title)} — {_html_value(author)} — {published_html} — "
                 f"<a href=\"{html.escape(url)}\" target=\"_blank\" rel=\"noopener noreferrer\">{source_label_html}</a>"
-                f"{fresh_html} {trust_badges_html} — Scrape: {scrape_mode_html}<!--MZ_EXTRAS_MOBILE--></div>"
+                f"{fresh_html} {trust_badges_html} — Scrape: {scrape_mode_html} — {scrape_ms_html} — {length_html} chars<!--MZ_EXTRAS_MOBILE--></div>"
                 "<div class=\"meta-desktop\">"
                 f"<div class=\"meta-row\"><strong>Title:</strong> {_html_value(title)}</div>"
                 f"<div class=\"meta-row\"><strong>Author:</strong> {_html_value(author)}</div>"
                 f"<div class=\"meta-row\"><strong>Published:</strong> {published_html}{fresh_html}</div>"
                 f"<div class=\"meta-row\"><strong>Source:</strong> <a href=\"{html.escape(url)}\" target=\"_blank\" rel=\"noopener noreferrer\">{source_label_html}</a></div>"
                 f"<div class=\"meta-row\"><strong>Scrape Mode:</strong> {scrape_mode_html}</div>"
+                f"<div class=\"meta-row\"><strong>Scrape Time:</strong> {scrape_ms_html}</div>"
+                f"<div class=\"meta-row\"><strong>Article Length:</strong> {length_html} chars</div>"
                 f"<div class=\"meta-row\"><strong>Cache:</strong> {cache_html}</div>"
                 f"{trust_badges_row}"
                 "<!--MZ_EXTRAS_DESKTOP-->"
@@ -1907,7 +2176,23 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
             ).strip()
         except Exception as exc:
             logger.exception("scrape_failed")
-            return _render_summary_html(f"Could not scrape article: {exc}", is_error=True), "N/A", 0.0, "N/A", "N/A", "", category_html, "", ""
+            return (
+                key_facts_html,
+                _render_summary_html(f"Could not scrape article: {exc}", is_error=True),
+                summary_confidence_html,
+                evidence_html,
+                sa_impact_html,
+                stakeholder_html,
+                "N/A",
+                0.0,
+                "N/A",
+                "N/A",
+                "",
+                category_html,
+                "",
+                "",
+                original_len,
+            )
 
     if not text:
         if used_url:
@@ -1916,7 +2201,12 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
                 reason = f"Could not extract article text. {meta.get('scrape_error')}"
             logger.info("empty_input_url")
             return (
+                key_facts_html,
                 _render_url_blocked_card(reason),
+                summary_confidence_html,
+                evidence_html,
+                sa_impact_html,
+                stakeholder_html,
                 "N/A",
                 0.0,
                 "N/A",
@@ -1925,9 +2215,26 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
                 category_html,
                 "",
                 "",
+                original_len,
             )
         logger.info("empty_input")
-        return _render_summary_html("Please paste article text or enter a URL.", is_error=True), "N/A", 0.0, "N/A", "N/A", "", category_html, "", ""
+        return (
+            key_facts_html,
+            _render_summary_html("Please paste article text or enter a URL.", is_error=True),
+            summary_confidence_html,
+            evidence_html,
+            sa_impact_html,
+            stakeholder_html,
+            "N/A",
+            0.0,
+            "N/A",
+            "N/A",
+            "",
+            category_html,
+            "",
+            "",
+            original_len,
+        )
 
     if len(text) > MAX_SUMMARY_INPUT_CHARS:
         logger.info("truncate_input from=%d to=%d", len(text), MAX_SUMMARY_INPUT_CHARS)
@@ -1936,6 +2243,7 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
     # Auto-detect input language and translate to English for summarization.
     # (Only triggers when detection is confident and language is supported.)
     lang_code, lang_prob = _detect_language_code(text)
+    lang_confident = bool(lang_code and lang_prob >= 0.75)
     if lang_code and lang_code != "en" and lang_prob >= 0.75:
         src = LANGDETECT_TO_NLLB.get(lang_code)
         if src and src != LANG_TO_NLLB_CODE["English"]:
@@ -1954,30 +2262,85 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
     import_t0 = time.perf_counter()
     try:
         _configure_transformers_logging()
-        from utils.summarizer import generate_summary, get_model_id
-        from utils.sentiment import analyze_sentiment
+        from utils.summarizer import generate_summary, get_model_id, get_summary_provider_info
+        from utils.sentiment import analyze_sentiment, get_sentiment_provider_info
     except Exception as exc:
         logger.exception("ml_import_failed")
-        return (_render_summary_html(f"Startup error loading ML components: {exc}", is_error=True), "N/A", 0.0, "N/A", "N/A", meta_out, category_html, "", "")
+        return (
+            key_facts_html,
+            _render_summary_html(f"Startup error loading ML components: {exc}", is_error=True),
+            summary_confidence_html,
+            evidence_html,
+            sa_impact_html,
+            stakeholder_html,
+            "N/A",
+            0.0,
+            "N/A",
+            "N/A",
+            meta_out,
+            category_html,
+            "",
+            "",
+            original_len,
+        )
     logger.info("ml_import_ok ms=%.0f", (time.perf_counter() - import_t0) * 1000)
 
     try:
-        model_info = f"Summarization Model: {get_model_id(SUMMARY_MODEL_CHOICE)}"
+        summary_info = get_summary_provider_info(SUMMARY_MODEL_CHOICE)
     except Exception:
-        model_info = "Summarization Model: facebook/bart-large-cnn"
+        summary_info = f"Local Transformers ({get_model_id(SUMMARY_MODEL_CHOICE)})"
+
+    try:
+        sentiment_info = get_sentiment_provider_info()
+    except Exception:
+        sentiment_info = "Local Transformers (distilbert-base-uncased-finetuned-sst-2-english)"
+
+    model_info = f"**Summarization:** {summary_info}\n\n**Sentiment:** {sentiment_info}"
 
     try:
         # Best-effort summarization timeout wrapper.
         summarize_t0 = time.perf_counter()
-        future = _executor.submit(generate_summary, text, model_choice=SUMMARY_MODEL_CHOICE)
+        future = _executor.submit(
+            generate_summary,
+            text,
+            max_len=SUMMARY_MAX_LEN,
+            min_len=SUMMARY_MIN_LEN,
+            model_choice=SUMMARY_MODEL_CHOICE,
+        )
         try:
             summary = future.result(timeout=SUMMARY_TIMEOUT_S)
         except TimeoutError:
             future.cancel()
             logger.warning("summarize_timeout timeout_s=%.1f", SUMMARY_TIMEOUT_S)
-            return (_render_summary_html("Summary could not be generated in time. Please try again.", is_error=True), "N/A", 0.0, "N/A", "N/A", meta_out, category_html, model_info, "")
+            return (
+                key_facts_html,
+                _render_summary_html("Summary could not be generated in time. Please try again.", is_error=True),
+                summary_confidence_html,
+                evidence_html,
+                sa_impact_html,
+                stakeholder_html,
+                "N/A",
+                0.0,
+                "N/A",
+                "N/A",
+                meta_out,
+                category_html,
+                model_info,
+                "",
+                original_len,
+            )
         summary = _normalize_summary(summary)
         logger.info("summarize_ok ms=%.0f summary_len=%d", (time.perf_counter() - summarize_t0) * 1000, len(summary))
+
+        evidence_sentences = _extract_evidence_sentences(text, summary, max_sentences=3)
+        evidence_html = _render_evidence_html(evidence_sentences, evidence_source_label)
+        summary_confidence_html = _render_summary_confidence(
+            original_len,
+            show_min_hint=show_min_text_hint,
+            scrape_mode=scrape_mode_raw or None,
+            lang_confident=lang_confident,
+        )
+        key_facts_html = _render_key_facts_html(summary, max_items=3)
 
         sentiment_t0 = time.perf_counter()
         # Keep sentiment/tags based on the English summary for consistency.
@@ -2004,6 +2367,9 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
         lens_t0 = time.perf_counter()
         lens = analyze_mzansi_lens(summary)
         logger.info("mzansi_lens_ok ms=%.0f", (time.perf_counter() - lens_t0) * 1000)
+
+        sa_impact_html = _render_sa_impact_html(summary, lens)
+        stakeholder_html = _render_stakeholder_views_html(summary, lens)
 
         def _inject_meta_sections(
             meta_html: str,
@@ -2046,9 +2412,11 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
             prov_html = html.escape(", ".join(lens.provinces)) if lens.provinces else "<em>None detected</em>"
             voices_html = html.escape(", ".join(lens.community_voices)) if lens.community_voices else "<em>None detected</em>"
             inst_html = html.escape(", ".join(lens.institutions)) if lens.institutions else "<em>None detected</em>"
+            length_html = html.escape(str(original_len)) if original_len else "<em>Unknown</em>"
             meta_out = (
                 "<div class=\"meta-card card\">"
                 "<div class=\"meta-row\"><strong>Source:</strong> <em>Pasted text</em></div>"
+                f"<div class=\"meta-row\"><strong>Article Length:</strong> {length_html} chars</div>"
                 "<div class=\"meta-divider\"></div>"
                 f"<div class=\"meta-row\"><strong><span class=\"mz-icon\">📍</span>Provinces:</strong> {prov_html}</div>"
                 f"<div class=\"meta-row\"><strong><span class=\"mz-icon\">📣</span>Community Voices:</strong> {voices_html}</div>"
@@ -2116,7 +2484,12 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
 
         logger.info("request_done ms=%.0f", (time.perf_counter() - started) * 1000)
         return (
+            key_facts_html,
             _render_summary_html(translated_summary),
+            summary_confidence_html,
+            evidence_html,
+            sa_impact_html,
+            stakeholder_html,
             sentiment.get("label", "N/A"),
             sentiment.get("score", 0.0),
             tags_out_str,
@@ -2125,10 +2498,27 @@ def summarize_and_analyze(text, url=None, target_language="English", enable_brow
             category_html,
             model_info,
             sentiment_viz,
+            original_len,
         )
     except Exception as exc:
         logger.exception("request_failed")
-        return _render_summary_html(f"Processing error: {exc}", is_error=True), "N/A", 0.0, "N/A", "N/A", meta_out, category_html, model_info, ""
+        return (
+            key_facts_html,
+            _render_summary_html(f"Processing error: {exc}", is_error=True),
+            summary_confidence_html,
+            evidence_html,
+            sa_impact_html,
+            stakeholder_html,
+            "N/A",
+            0.0,
+            "N/A",
+            "N/A",
+            meta_out,
+            category_html,
+            model_info,
+            "",
+            original_len,
+        )
 
 
 def summarize_article(text, url, target_language, enable_browser_mode):
@@ -2161,18 +2551,6 @@ with gr.Blocks(
 
         with gr.Column(scale=5, elem_classes=["mz-top-controls"]):
             theme_toggle_btn = gr.Button("Dark Mode", elem_id="mz-theme-toggle")
-
-        gr.HTML(
-            """
-            <svg class="mz-flag" viewBox="0 0 38 26" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <rect width="38" height="26" rx="4" fill="#0f1115"/>
-              <rect x="2" y="2" width="34" height="5" rx="2" fill="#E03C31"/>
-              <rect x="2" y="7" width="34" height="5" rx="2" fill="#FFB81C"/>
-              <rect x="2" y="12" width="34" height="5" rx="2" fill="#007A33"/>
-              <rect x="2" y="17" width="34" height="7" rx="2" fill="#003DA5"/>
-            </svg>
-            """
-        )
 
     # Toggle updates the hidden mode (Python) and button label.
     theme_toggle_btn.click(
@@ -2258,13 +2636,38 @@ with gr.Blocks(
 
                         with gr.Row():
                             run_btn = gr.Button("Summarize", variant="primary", elem_classes="gr-button-primary", scale=1)
-                            reset_btn = gr.Button("Reset", elem_classes="gr-button-reset", scale=1)
+                            reset_btn = gr.Button("Reset", elem_classes="gr-button-reset", elem_id="reset-btn", scale=1)
+
+                        gr.Examples(
+                            examples=[
+                                [
+                                    "South Africa's finance ministry announced a new budget framework focused on debt stabilization and infrastructure investment. Officials said the plan aims to balance fiscal discipline with job creation and service delivery. The announcement comes amid concerns about power supply reliability and slowing growth.",
+                                    "",
+                                    "English",
+                                    False,
+                                ],
+                                [
+                                    "The Springboks secured a late win in a tense international match, with coaches praising defensive discipline and set-piece work. Analysts noted that squad depth and fitness will be key as the season progresses.",
+                                    "",
+                                    "English",
+                                    False,
+                                ],
+                            ],
+                            inputs=[article_text, article_url, target_lang, enable_browser_mode],
+                            label="Quick examples",
+                        )
 
                     with gr.Group(elem_classes="meta-card"):
                         gr.HTML("<h2>Article Summary</h2>")
+                        key_facts_out = gr.HTML()
                         summary_out = gr.HTML()
+                        summary_confidence_out = gr.HTML()
+                        evidence_out = gr.HTML()
+                        sa_impact_out = gr.HTML()
+                        stakeholder_out = gr.HTML()
                         sentiment_out = gr.Textbox(label="Sentiment")
                         confidence_out = gr.Number(label="Confidence Score")
+                        article_len_out = gr.Number(label="Article Length (chars)")
 
                         gr.Markdown("### Sentiment Visual")
                         sentiment_viz_box = gr.HTML()
@@ -2319,13 +2722,35 @@ with gr.Blocks(
                         f"<div style=\"margin-top:8px;color:var(--mz-muted)\">Source: {html.escape(source_label)}</div>"
                         "</div>"
                     )
-                return _render_trend_tiles(
-                    top,
-                    entries,
-                    source_label=source_label,
-                    updated_s=updated_s,
-                    per_tile=1,
-                )
+                max_count = max([int(c) for _, c in top] or [1])
+                header = f"Trending ({html.escape(source_label)})"
+                if updated_s:
+                    header += f" <span class=\"mz-pill mz-pill-gray\">Updated {html.escape(updated_s)}</span>"
+
+                blocks: list[str] = [
+                    f"<div class=\"mz-trends\"><div style=\"font-weight:700;margin:6px 0 10px 0\">{header}</div>",
+                ]
+                for i, (tag, count) in enumerate(top):
+                    try:
+                        c = int(count)
+                    except Exception:
+                        c = 0
+                    pct = 0.0 if max_count <= 0 else max(0.0, min(100.0, (c / max_count) * 100.0))
+                    cls = f"c{i % 4}"
+                    tag_html = html.escape(str(tag))
+                    blocks.append(
+                        "<div class=\"trend-row\">"
+                        f"<div class=\"trend-bar\">"
+                        f"<div class=\"trend-fill mz-trends-bar {cls}\" style=\"width:{pct:.0f}%\">"
+                        f"<span class=\"trend-label\">{tag_html}</span>"
+                        "</div>"
+                        f"<span class=\"trend-pct\">{pct:.0f}%</span>"
+                        "</div>"
+                        "</div>"
+                    )
+
+                blocks.append("</div>")
+                return "".join(blocks)
 
             summarize_trends_refresh.click(
                 fn=_render_trends_sidebar,
@@ -2342,13 +2767,13 @@ with gr.Blocks(
             run_btn.click(
                 fn=summarize_article,
                 inputs=[article_text, article_url, target_lang, enable_browser_mode],
-                outputs=[summary_out, sentiment_out, confidence_out, tags_out, topic_out, meta_box, category_box, model_box, sentiment_viz_box],
+                outputs=[key_facts_out, summary_out, summary_confidence_out, evidence_out, sa_impact_out, stakeholder_out, sentiment_out, confidence_out, tags_out, topic_out, meta_box, category_box, model_box, sentiment_viz_box, article_len_out],
             )
 
             reset_btn.click(
-                fn=lambda: ("", "", 0.0, "", "", "", "", "", ""),
+                fn=lambda: ("", "", "", "", "", "", "", 0.0, "", "", "", "", "", "", 0),
                 inputs=[],
-                outputs=[summary_out, sentiment_out, confidence_out, tags_out, topic_out, meta_box, category_box, model_box, sentiment_viz_box],
+                outputs=[key_facts_out, summary_out, summary_confidence_out, evidence_out, sa_impact_out, stakeholder_out, sentiment_out, confidence_out, tags_out, topic_out, meta_box, category_box, model_box, sentiment_viz_box, article_len_out],
             )
             clear_url_btn.click(
                 fn=lambda: "",

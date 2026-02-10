@@ -1,7 +1,7 @@
 import os
 import threading
 import re
-
+import httpx
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -24,6 +24,14 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
 
 DEFAULT_MODEL_CHOICE = "t5"
 DEFAULT_NUM_BEAMS = int(os.environ.get("SUMMARY_NUM_BEAMS", "2"))
+SUMMARY_PROVIDER = os.environ.get("SUMMARY_PROVIDER", "hf_api").strip().lower()
+SUMMARY_PROVIDER_FALLBACK = os.environ.get("SUMMARY_PROVIDER_FALLBACK", "1").strip() not in {"0", "false", "False"}
+HF_SUMMARY_MODEL_ID = os.environ.get("HF_SUMMARY_MODEL_ID", "facebook/bart-large-cnn")
+HF_INFERENCE_TIMEOUT_S = float(os.environ.get("HF_INFERENCE_TIMEOUT_S", "30"))
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_SUMMARY_MODEL = os.environ.get("OPENAI_SUMMARY_MODEL", "gpt-4o-mini").strip()
+COHERE_API_KEY = os.environ.get("COHERE_API_KEY", "").strip()
+COHERE_SUMMARY_MODEL = os.environ.get("COHERE_SUMMARY_MODEL", "command-r").strip()
 
 _tokenizers: dict[str, object] = {}
 _models: dict[str, object] = {}
@@ -83,6 +91,15 @@ def get_model_id(model_choice: str = DEFAULT_MODEL_CHOICE) -> str:
     return str(MODEL_REGISTRY[choice]["model"])
 
 
+def _get_hf_token() -> str:
+    return (
+        os.environ.get("HF_API_TOKEN")
+        or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+        or os.environ.get("HF_TOKEN")
+        or ""
+    ).strip()
+
+
 def _chunk_text(text: str, max_chars: int) -> list[str]:
     t = (text or "").strip()
     if not t:
@@ -128,6 +145,26 @@ def generate_summary(text, max_len: int = 150, min_len: int = 50, model_choice: 
     if not text:
         return ""
 
+    provider = SUMMARY_PROVIDER
+    if provider == "hf_api":
+        try:
+            return _generate_summary_hf_api(text, max_len=max_len, min_len=min_len)
+        except Exception:
+            if not SUMMARY_PROVIDER_FALLBACK:
+                raise
+    elif provider == "openai":
+        try:
+            return _generate_summary_openai(text)
+        except Exception:
+            if not SUMMARY_PROVIDER_FALLBACK:
+                raise
+    elif provider == "cohere":
+        try:
+            return _generate_summary_cohere(text)
+        except Exception:
+            if not SUMMARY_PROVIDER_FALLBACK:
+                raise
+
     tokenizer, model, device, input_max = _ensure_loaded(model_choice)
 
     # Chunking prevents long-article failures/hangs and avoids silently truncating.
@@ -167,3 +204,74 @@ def generate_summary(text, max_len: int = 150, min_len: int = 50, model_choice: 
         summaries.append(tokenizer.decode(output_ids[0], skip_special_tokens=True))
 
     return " ".join([s for s in summaries if (s or "").strip()]).strip()
+
+
+def _generate_summary_hf_api(text: str, max_len: int, min_len: int) -> str:
+    token = _get_hf_token()
+    if not token:
+        raise RuntimeError("Missing HF API token. Set HF_API_TOKEN or HUGGINGFACEHUB_API_TOKEN.")
+    url = f"https://api-inference.huggingface.co/models/{HF_SUMMARY_MODEL_ID}"
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "inputs": text,
+        "parameters": {"max_length": int(max_len), "min_length": int(min_len), "do_sample": False},
+    }
+    resp = httpx.post(url, headers=headers, json=payload, timeout=HF_INFERENCE_TIMEOUT_S)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HF Inference API error ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            return str(first.get("summary_text", "")).strip()
+    return ""
+
+
+def _generate_summary_openai(text: str) -> str:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("Missing OPENAI_API_KEY.")
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    system = "Summarize the article in 3-5 sentences. Keep it factual and concise."
+    payload = {
+        "model": OPENAI_SUMMARY_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0.2,
+    }
+    resp = httpx.post(url, headers=headers, json=payload, timeout=HF_INFERENCE_TIMEOUT_S)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OpenAI API error ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    return str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+
+
+def _generate_summary_cohere(text: str) -> str:
+    if not COHERE_API_KEY:
+        raise RuntimeError("Missing COHERE_API_KEY.")
+    url = "https://api.cohere.ai/v1/summarize"
+    headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": COHERE_SUMMARY_MODEL,
+        "text": text,
+        "length": "short",
+        "format": "paragraph",
+    }
+    resp = httpx.post(url, headers=headers, json=payload, timeout=HF_INFERENCE_TIMEOUT_S)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Cohere API error ({resp.status_code}): {resp.text[:200]}")
+    data = resp.json()
+    return str(data.get("summary", "")).strip()
+
+
+def get_summary_provider_info(model_choice: str = DEFAULT_MODEL_CHOICE) -> str:
+    provider = SUMMARY_PROVIDER or "local"
+    if provider == "hf_api":
+        return f"HF Inference API ({HF_SUMMARY_MODEL_ID})"
+    if provider == "openai":
+        return f"OpenAI ({OPENAI_SUMMARY_MODEL})"
+    if provider == "cohere":
+        return f"Cohere ({COHERE_SUMMARY_MODEL})"
+    return f"Local Transformers ({get_model_id(model_choice)})"

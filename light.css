@@ -21,9 +21,9 @@
 :root[data-theme="light"] body{background: var(--mz-bg) !important;}
 
 :root[data-theme="light"] .gradio-container{
-  max-width: 1120px !important;
+  max-width: 1440px !important;
   margin: 0 auto !important;
-  padding: 18px 18px 28px !important;
+  padding: 0 24px 28px !important;
 }
 
 :root[data-theme="light"] .mz-topbar{
@@ -55,6 +55,26 @@
 :root[data-theme="light"] button.primary,
 :root[data-theme="light"] .gr-button-primary{
   border-color: rgba(0,0,0,.15) !important;
+}
+
+:root[data-theme="light"] .gr-button-reset,
+:root[data-theme="light"] .gr-button-reset button,
+:root[data-theme="light"] .gr-button-reset button *{
+  color: #111111 !important;
+}
+:root[data-theme="light"] button.secondary.gr-button-reset,
+:root[data-theme="light"] button.secondary.gr-button-reset *{
+  color: #111111 !important;
+}
+:root[data-theme="light"] #reset-btn,
+:root[data-theme="light"] #reset-btn *{
+  color: #111111 !important;
+  -webkit-text-fill-color: #111111 !important;
+}
+:root[data-theme="light"] button.secondary.gr-button-reset,
+:root[data-theme="light"] button.secondary.gr-button-reset *{
+  color: #111111 !important;
+  -webkit-text-fill-color: #111111 !important;
 }
 
 :root[data-theme="light"] .meta-card,

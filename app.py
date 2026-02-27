@@ -1665,7 +1665,7 @@ def render_topbar():
           Mzansi News Summarizer
         </h1>
         <p style="margin:4px 0 0;color:{topbar_sub};font-size:13px;">
-          Summaries, sentiment, and SA-focused insights
+          Summaries, Sentiment and SA-focused insights
         </p>
       </div>
 

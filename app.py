@@ -1475,9 +1475,13 @@ def _fetch_rss_single(url: str, limit: int = RSS_LIMIT_DEFAULT):
             "Accept-Language": "en-ZA,en;q=0.9",
         }
         with httpx.Client(timeout=RSS_TIMEOUT_S, follow_redirects=True, headers=headers) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-            feed = feedparser.parse(resp.content)
+                resp = client.get(url)
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError:
+                    logger.error(f"rss_fetch_failed url='{url}'")
+                    return [], []
+                feed = feedparser.parse(resp.content)
     except Exception as exc:
         logger.exception("rss_fetch_failed url=%r", url)
         return f"Could not load RSS feed: {exc}", []
@@ -3148,10 +3152,9 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     print("Starting Gradio app...")
-    server_port = int(os.environ.get("GRADIO_SERVER_PORT", "7861"))
     iface.launch(
-        server_name="127.0.0.1",
-        server_port=server_port,
+        server_name="0.0.0.0",   # bind to all interfaces
+        server_port=int(os.environ.get("PORT", 7860)),  # use Cloud-provided port
         css=APP_CSS,
-        theme=gr.themes.Base(),
+        share=False              # Streamlit Cloud already provides a public URL
     )

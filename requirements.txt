@@ -86,3 +86,6 @@ typing_extensions==4.15.0
 tzdata==2025.3
 urllib3==2.6.3
 uvicorn==0.40.0
+gradio==6.5.1
+streamlit==1.54.0
+lxml_html_clean==0.4.3

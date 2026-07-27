@@ -1,0 +1,17 @@
+[server]
+headless = true
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+# CSS injection in app.py handles full dark/light theming.
+# Base = dark prevents Streamlit adding white flash on load.
+base = "dark"
+backgroundColor = "#0b0f14"
+secondaryBackgroundColor = "#0e1318"
+textColor = "rgba(255,255,255,.92)"
+font = "sans serif"

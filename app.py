@@ -78,7 +78,6 @@ RSS_PREFETCH_TTL_S       = float(os.environ.get("RSS_PREFETCH_TTL_S", "300"))
 NLLB_MODEL_NAME          = os.environ.get("NLLB_MODEL_NAME", "facebook/nllb-200-distilled-600M")
 TRANSLATION_NUM_BEAMS    = int(os.environ.get("TRANSLATION_NUM_BEAMS", "2"))
 TRANSLATION_CACHE_TTL_S  = float(os.environ.get("TRANSLATION_CACHE_TTL_S", "3600"))
-HF_INFERENCE_TIMEOUT_S   = float(os.environ.get("HF_INFERENCE_TIMEOUT_S", "60"))
 
 _executor = ThreadPoolExecutor(max_workers=1)
 
@@ -110,53 +109,34 @@ LANG_TO_NLLB = {
     "Tshivenda":"ven_Latn","Xitsonga":"tso_Latn",
 }
 _NLLB_FALLBACK_LANGUAGE = {
-    "isiNdebele": "isiZulu",
     "Tshivenda": "Xitsonga",
 }
-TRANSLATION_MODEL_MAP = {
-    "Afrikaans": "Helsinki-NLP/opus-mt-en-af",
-    "isiXhosa": "Helsinki-NLP/opus-mt-en-xh",
-    "isiZulu": "Helsinki-NLP/opus-mt-en-zu",
-    "Sepedi (Northern Sotho)": "Helsinki-NLP/opus-mt-en-nso",
-    "Sesotho": "Helsinki-NLP/opus-mt-en-st",
-    "Setswana": "Helsinki-NLP/opus-mt-en-tn",
-    "siSwati": "Helsinki-NLP/opus-mt-en-ss",
-    "Xitsonga": "Helsinki-NLP/opus-mt-en-ts",
-}
-TRANSLATION_TASK_MAP = {
-    "Afrikaans": "translation_en_to_af",
-    "isiXhosa": "translation_en_to_xh",
-    "isiZulu": "translation_en_to_zu",
-    "Sepedi (Northern Sotho)": "translation_en_to_nso",
-    "Sesotho": "translation_en_to_st",
-    "Setswana": "translation_en_to_tn",
-    "siSwati": "translation_en_to_ss",
-    "Xitsonga": "translation_en_to_ts",
-}
 LANG_TO_GOOGLE = {
+    # Only languages Google Translate actually serves. Setswana, siSwati,
+    # isiNdebele, and Tshivenda are NOT supported by Google Translate — they
+    # fall through to the MyMemory / local NLLB tiers below.
     "English": "en",
     "Afrikaans": "af",
     "isiXhosa": "xh",
     "isiZulu": "zu",
     "Sepedi (Northern Sotho)": "nso",
     "Sesotho": "st",
-    "Setswana": "tn",
-    "siSwati": "ss",
     "Xitsonga": "ts",
-    # Best-effort fallbacks for languages with weaker online support.
-    "isiNdebele": "zu",
-    "Tshivenda": "ts",
 }
-_TRANSLATION_PIPELINES: dict[str, object] = {}
-_TRANSLATION_PIPELINE_LOCK = threading.Lock()
-
-def _get_hf_token():
-    return (
-        os.environ.get("HF_API_TOKEN")
-        or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
-        or os.environ.get("HF_TOKEN")
-        or ""
-    ).strip()
+LANG_TO_MYMEMORY = {
+    # MyMemory (free, keyless) covers everything except Tshivenda, which has
+    # no reliable free online engine and is handled by the local NLLB model.
+    "Afrikaans": "af-ZA",
+    "isiXhosa": "xh-ZA",
+    "isiZulu": "zu-ZA",
+    "Sepedi (Northern Sotho)": "nso-ZA",
+    "Sesotho": "st-LS",
+    "Setswana": "tn-ZA",
+    "siSwati": "ss-SZ",
+    "Xitsonga": "ts-ZA",
+    "isiNdebele": "nr-ZA",
+}
+MYMEMORY_SOURCE = "en-GB"
 
 def _translate_summary_google(summary_en, target_language):
     if not summary_en or target_language == "English":
@@ -187,6 +167,37 @@ def _translate_summary_google(summary_en, target_language):
         return result
     except Exception:
         logger.exception("translate_google_failed target=%s", target_language)
+        return summary_en, f"Translation unavailable for {target_language} right now."
+
+def _translate_summary_mymemory(summary_en, target_language):
+    if not summary_en or target_language == "English":
+        return summary_en, ""
+    tgt = LANG_TO_MYMEMORY.get(target_language, "")
+    if not tgt:
+        return summary_en, f"Translation not configured for {target_language}."
+    ck = ("sum_mymemory", f"en->{tgt}", hashlib.sha256(summary_en.encode()).hexdigest())
+    cached = _tc_get(ck)
+    if cached:
+        return cached
+    try:
+        from deep_translator import MyMemoryTranslator
+
+        # MyMemory has a ~500 char limit per request; translate in chunks.
+        chunks = [summary_en[i:i+480] for i in range(0, len(summary_en), 480)]
+        parts = []
+        tr = MyMemoryTranslator(source=MYMEMORY_SOURCE, target=tgt)
+        for c in chunks[:8]:
+            txt = (tr.translate(c) or "").strip()
+            if txt:
+                parts.append(txt)
+        translated = _normalize_translation(" ".join(parts))
+        if not translated or translated.lower() == summary_en.strip().lower():
+            return summary_en, f"Translation unavailable for {target_language} right now."
+        result = (translated, "")
+        _tc_set(ck, result)
+        return result
+    except Exception:
+        logger.exception("translate_mymemory_failed target=%s", target_language)
         return summary_en, f"Translation unavailable for {target_language} right now."
 
 LANGDETECT_TO_NLLB  = {"en":"eng_Latn","af":"afr_Latn","zu":"zul_Latn","xh":"xho_Latn","nr":"nbl_Latn","nso":"nso_Latn","st":"sot_Latn","tn":"tsn_Latn","ss":"ssw_Latn","ve":"ven_Latn","ts":"tso_Latn"}
@@ -584,187 +595,26 @@ def _normalize_translation(text):
     t = re.sub(r"\s{2,}", " ", t)
     return t.strip()
 
-def _get_translation_pipeline(model_id, task):
-    if not model_id or not task:
-        raise ValueError("Missing translation model/task.")
-    key = f"{task}::{model_id}"
-    with _TRANSLATION_PIPELINE_LOCK:
-        cached = _TRANSLATION_PIPELINES.get(key)
-        if cached is not None:
-            return cached
-        from transformers import pipeline
-        import torch
-        device = 0 if torch.cuda.is_available() else -1
-        translator = pipeline(task, model=model_id, device=device)
-        _TRANSLATION_PIPELINES[key] = translator
-        return translator
-
-def _get_nllb_translation_pipeline(model_id):
-    key = f"nllb::{model_id}"
-    with _TRANSLATION_PIPELINE_LOCK:
-        cached = _TRANSLATION_PIPELINES.get(key)
-        if cached is not None:
-            return cached
-        from transformers import pipeline
-        import torch
-        device = 0 if torch.cuda.is_available() else -1
-        translator = pipeline("translation", model=model_id, device=device)
-        _TRANSLATION_PIPELINES[key] = translator
-        return translator
-
-def _translate_summary_with_model(summary_en, target_language):
-    if not summary_en:
-        return summary_en, ""
-    model_id = TRANSLATION_MODEL_MAP.get(target_language, "")
-    task = TRANSLATION_TASK_MAP.get(target_language, "")
-    if not model_id or not task:
-        return summary_en, f"Translation not configured for {target_language}."
-
-    ck = ("sum_model", f"{model_id}:{task}", hashlib.sha256(summary_en.encode()).hexdigest())
-    cached = _tc_get(ck)
-    if cached:
-        return cached
-
-    # 1) Prefer Hugging Face Inference API (best for Streamlit Cloud memory/startup).
-    token = _get_hf_token()
-    if token:
-        try:
-            url = f"https://api-inference.huggingface.co/models/{model_id}"
-            headers = {"Authorization": f"Bearer {token}"}
-            payload = {
-                "inputs": summary_en,
-                "parameters": {"max_length": 256, "do_sample": False},
-                "options": {"wait_for_model": True},
-            }
-            resp = httpx.post(url, headers=headers, json=payload, timeout=HF_INFERENCE_TIMEOUT_S)
-            if resp.status_code < 400:
-                data = resp.json()
-                text_out = ""
-                if isinstance(data, list) and data:
-                    first = data[0]
-                    if isinstance(first, dict):
-                        text_out = (first.get("translation_text") or "").strip()
-                elif isinstance(data, dict):
-                    text_out = (data.get("translation_text") or "").strip()
-                translated = _normalize_translation(text_out)
-                if translated and translated.lower() != summary_en.strip().lower():
-                    result = (translated, "")
-                    _tc_set(ck, result)
-                    return result
-            else:
-                logger.warning("hf_translate_api_failed model=%s status=%s", model_id, resp.status_code)
-        except Exception:
-            logger.exception("hf_translate_api_exception model=%s", model_id)
-
-    # 2) Local pipeline fallback.
-    try:
-        tr = _get_translation_pipeline(model_id, task)
-        out = tr(summary_en, max_length=256)
-        text_out = ""
-        if isinstance(out, list) and out:
-            text_out = (out[0].get("translation_text") or "").strip()
-        elif isinstance(out, dict):
-            text_out = (out.get("translation_text") or "").strip()
-        translated = _normalize_translation(text_out)
-        if not translated or translated.lower() == summary_en.strip().lower():
-            return summary_en, f"Translation unavailable for {target_language} right now."
-        result = (translated, "")
-        _tc_set(ck, result)
-        return result
-    except Exception:
-        logger.exception("translate_model_failed target=%s", target_language)
-        return summary_en, f"Translation unavailable for {target_language} right now."
-
-def _translate_summary_nllb_api(summary_en, target_language):
-    if not summary_en:
-        return summary_en, ""
-    tgt = LANG_TO_NLLB.get(target_language, "")
-    if not tgt:
-        return summary_en, f"Translation not configured for {target_language}."
-
-    ck = ("sum_nllb_api", f"{NLLB_MODEL_NAME}:{tgt}", hashlib.sha256(summary_en.encode()).hexdigest())
-    cached = _tc_get(ck)
-    if cached:
-        return cached
-
-    headers = {}
-    token = _get_hf_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    payload = {
-        "inputs": summary_en,
-        "parameters": {
-            "src_lang": LANG_TO_NLLB["English"],
-            "tgt_lang": tgt,
-            "max_length": 256,
-        },
-        "options": {"wait_for_model": True},
-    }
-    try:
-        url = f"https://api-inference.huggingface.co/models/{NLLB_MODEL_NAME}"
-        resp = httpx.post(url, headers=headers, json=payload, timeout=HF_INFERENCE_TIMEOUT_S)
-        if resp.status_code >= 400:
-            return summary_en, f"Translation unavailable for {target_language} right now."
-        data = resp.json()
-        text_out = ""
-        if isinstance(data, list) and data:
-            first = data[0]
-            if isinstance(first, dict):
-                text_out = (first.get("translation_text") or first.get("generated_text") or "").strip()
-        elif isinstance(data, dict):
-            text_out = (data.get("translation_text") or data.get("generated_text") or "").strip()
-
-        translated = _normalize_translation(text_out)
-        if not translated or translated.lower() == summary_en.strip().lower():
-            return summary_en, f"Translation unavailable for {target_language} right now."
-        result = (translated, "")
-        _tc_set(ck, result)
-        return result
-    except Exception:
-        logger.exception("translate_nllb_api_failed target=%s", target_language)
-        return summary_en, f"Translation unavailable for {target_language} right now."
-
 def _translate_summary(summary_en, target_language):
     if not summary_en or target_language == "English":
         return summary_en, "", "english"
 
-    alias_lang = target_language
-    alias_note = ""
-    if target_language in _NLLB_FALLBACK_LANGUAGE:
-        alias_lang = _NLLB_FALLBACK_LANGUAGE[target_language]
-        alias_note = (
-            f"Used {alias_lang} as closest available translation for {target_language}."
-        )
-
-    # 1) Prefer Google translation fallback for reliability on Streamlit Cloud.
-    g_translated, g_note = _translate_summary_google(summary_en, alias_lang)
+    # 1) Google Translate — best quality, but only covers languages it
+    # actually serves (see LANG_TO_GOOGLE). Always try the real target
+    # language first; never silently substitute a related language here.
+    g_translated, g_note = _translate_summary_google(summary_en, target_language)
     if g_translated.strip().lower() != summary_en.strip().lower():
-        if alias_note and not g_note:
-            return g_translated, alias_note, "google"
-        if alias_note and g_note:
-            return g_translated, f"{alias_note} {g_note}".strip(), "google"
         return g_translated, g_note, "google"
 
-    # 2) Facebook NLLB Inference API.
-    api_translated, api_note = _translate_summary_nllb_api(summary_en, alias_lang)
-    if api_translated.strip().lower() != summary_en.strip().lower():
-        if alias_note and not api_note:
-            return api_translated, alias_note, "nllb_api"
-        if alias_note and api_note:
-            return api_translated, f"{alias_note} {api_note}".strip(), "nllb_api"
-        return api_translated, api_note, "nllb_api"
+    # 2) MyMemory (free, keyless) — covers Setswana, siSwati, isiNdebele,
+    # and doubles as a backup for anything Google's tier missed.
+    m_translated, m_note = _translate_summary_mymemory(summary_en, target_language)
+    if m_translated.strip().lower() != summary_en.strip().lower():
+        return m_translated, m_note, "mymemory"
 
-    # 3) Per-language OPUS models.
-    model_translated, model_note = _translate_summary_with_model(summary_en, alias_lang)
-    if model_translated.strip().lower() != summary_en.strip().lower():
-        if alias_note and not model_note:
-            return model_translated, alias_note, "opus_local"
-        if alias_note and model_note:
-            return model_translated, f"{alias_note} {model_note}".strip(), "opus_local"
-        return model_translated, model_note, "opus_local"
-
-    # 4) Fall back to local Facebook NLLB pipeline if model path failed.
+    # 3) Local Facebook NLLB pipeline — last resort, but the only engine
+    # that natively supports Tshivenda. Only substitute a related language
+    # (_NLLB_FALLBACK_LANGUAGE) if the real target genuinely fails below.
     tgt = LANG_TO_NLLB.get(target_language)
     fallback_lang = _NLLB_FALLBACK_LANGUAGE.get(target_language, "")
     fallback_tgt = LANG_TO_NLLB.get(fallback_lang) if fallback_lang else None
@@ -778,34 +628,29 @@ def _translate_summary(summary_en, target_language):
             return cached[0], cached[1], "nllb_local"
         return cached
     try:
-        nllb = _get_nllb_translation_pipeline(NLLB_MODEL_NAME)
+        import torch
+        tok, mdl, dev = _get_nllb(NLLB_MODEL_NAME)
         fallback_note = ""
 
-        out = nllb(
-            summary_en,
-            src_lang=LANG_TO_NLLB["English"],
-            tgt_lang=tgt,
-            max_length=256,
-        )
-        translated = ""
-        if isinstance(out, list) and out:
-            translated = (out[0].get("translation_text") or "").strip()
-        elif isinstance(out, dict):
-            translated = (out.get("translation_text") or "").strip()
-        translated = _normalize_translation(translated)
+        def _nllb_generate(text, tgt_code):
+            chunks = [text[i:i+800] for i in range(0, len(text), 800)]
+            parts = []
+            fid = _nllb_tok_id(tok, tgt_code)
+            for chunk in chunks[:6]:
+                enc = _tokenize_with_src_fallback(tok, chunk, LANG_TO_NLLB["English"], max_length=512)
+                enc = {k: v.to(dev) for k, v in enc.items()}
+                with torch.no_grad():
+                    gen_kwargs = {"max_length": 256, "num_beams": TRANSLATION_NUM_BEAMS}
+                    if fid is not None:
+                        gen_kwargs["forced_bos_token_id"] = fid
+                    out_ids = mdl.generate(**enc, **gen_kwargs)
+                parts.append(tok.decode(out_ids[0], skip_special_tokens=True).strip())
+            return _normalize_translation(" ".join(p for p in parts if p))
 
-        if translated and translated.lower() == summary_en.strip().lower() and fallback_tgt:
-            out2 = nllb(
-                summary_en,
-                src_lang=LANG_TO_NLLB["English"],
-                tgt_lang=fallback_tgt,
-                max_length=256,
-            )
-            if isinstance(out2, list) and out2:
-                translated = (out2[0].get("translation_text") or "").strip()
-            elif isinstance(out2, dict):
-                translated = (out2.get("translation_text") or "").strip()
-            translated = _normalize_translation(translated)
+        translated = _nllb_generate(summary_en, tgt)
+
+        if (not translated or translated.lower() == summary_en.strip().lower()) and fallback_tgt:
+            translated = _nllb_generate(summary_en, fallback_tgt)
             if translated:
                 fallback_note = (
                     f"Used {fallback_lang} as closest available translation for {target_language}."
@@ -818,7 +663,7 @@ def _translate_summary(summary_en, target_language):
         _tc_set(ck, result)
         return result
     except Exception:
-        logger.exception("translate_failed target=%s model=nllb_pipeline", target_language)
+        logger.exception("translate_failed target=%s model=nllb_local", target_language)
         return summary_en, "Translation unavailable for this language right now.", "none"
 
 def _compose_summary_display(result: dict, target_language: str) -> tuple[str, str]:
@@ -1833,9 +1678,8 @@ with tab_sum:
                 eng_label = {
                     "english": "English (no translation)",
                     "google": "Google Translate",
-                    "nllb_api": "Facebook NLLB API",
-                    "opus_local": "OPUS local model",
-                    "nllb_local": "Facebook NLLB local",
+                    "mymemory": "MyMemory Translate",
+                    "nllb_local": "Facebook NLLB (local model)",
                     "none": "Unavailable",
                 }.get((res.get("translation_engine") or "none").strip().lower(), "Unknown")
                 st.caption(f"Translation engine: {eng_label}")
@@ -2172,10 +2016,11 @@ with tab_about:
 
     | Variable | Default | Options |
     |---|---|---|
-    | `SUMMARY_PROVIDER` | `hf_api` | `hf_api`, `openai`, `cohere`, `local` |
-    | `HF_API_TOKEN` | — | Required for `hf_api` |
+    | `SUMMARY_PROVIDER` | `groq` | `groq`, `openai`, `cohere`, `local` |
+    | `GROQ_SUMMARIZER_API_KEY` | — | Required for `groq` |
     | `OPENAI_API_KEY` | — | Required for `openai` |
     | `COHERE_API_KEY` | — | Required for `cohere` |
+    | `SENTIMENT_PROVIDER` | `local` | `local`, `openai`, `cohere` |
     | `SUMMARY_MODEL_CHOICE` | `t5` | `t5`, `bart`, `pegasus` |
     | `NLLB_MODEL_NAME` | `facebook/nllb-200-distilled-600M` | Any NLLB variant |
     """)

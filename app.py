@@ -99,7 +99,6 @@ RSS_SOURCES = {
     "MyBroadband":                "https://mybroadband.co.za/news/feed",
     "BusinessTech":               "https://businesstech.co.za/news/feed/",
 }
-RSS_TRENDS_AGG_LABEL = "All SA RSS (Aggregated)"
 
 SA_LANGUAGES = [
     "English","Afrikaans","isiNdebele","isiXhosa","isiZulu",
@@ -332,6 +331,10 @@ _TSTOP = {
 }
 
 def _title_terms(title):
+    # Google News RSS search feeds append " - <Publisher>" to every title
+    # (e.g. "Headline text - Goal.com"); strip that trailing segment so
+    # publisher names don't dominate trending terms.
+    title = re.sub(r"\s+-\s+\S[^-]{0,40}$", "", title or "")
     words = [w for w in re.split(r"[^a-z0-9]+", title.lower()) if w]
     return [w for w in words if len(w) >= 3 and w not in _TSTOP]
 
@@ -1875,8 +1878,8 @@ with tab_sum:
             st.caption(f"Updated {upd.strftime('%H:%M UTC')}")
         if cached:
             st.markdown(
-                f"<div style='font-weight:800;color:var(--mz-text);margin:4px 0 8px;'>"
-                f"Trending ({html.escape(RSS_TRENDS_AGG_LABEL)})</div>",
+                "<div style='font-weight:800;color:var(--mz-text);margin:4px 0 8px;'>"
+                "Trending Right Now</div>",
                 unsafe_allow_html=True,
             )
             render_trend_bars(cached, top_n=6)

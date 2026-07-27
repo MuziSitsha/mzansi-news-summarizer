@@ -1,3 +1,6 @@
+import re
+
+
 def classify_topic(text: str) -> str:
     """Heuristic topic classification for dashboard display.
 
@@ -61,7 +64,7 @@ def classify_topic(text: str) -> str:
     for topic, keys in topics.items():
         score = 0
         for k in keys:
-            if k in t:
+            if re.search(r"\b" + re.escape(k) + r"\b", t):
                 score += 1
         scores[topic] = score
 

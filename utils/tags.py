@@ -1,3 +1,6 @@
+import re
+
+
 def assign_tags(text):
     tags = []
     keywords = {
@@ -23,7 +26,8 @@ def assign_tags(text):
             "elections", "government", "coalition"
         ]
     }
+    t = text.lower()
     for tag, words in keywords.items():
-        if any(word.lower() in text.lower() for word in words):
+        if any(re.search(r"\b" + re.escape(word.lower()) + r"\b", t) for word in words):
             tags.append(tag)
     return tags

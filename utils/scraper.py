@@ -3,6 +3,7 @@ import os
 import json
 import re
 import random
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -109,7 +110,16 @@ def _reader_proxy_url(url: str) -> str:
 def _scrape_with_reader_proxy_with_metadata(url: str) -> tuple[str, dict]:
     domain = (urlparse(url).netloc or "").lower()
     proxy_url = _reader_proxy_url(url)
-    resp = httpx.get(proxy_url, timeout=READER_PROXY_TIMEOUT_S, follow_redirects=True, headers=_pick_headers())
+
+    resp = None
+    # r.jina.ai's free tier rate-limits aggressively (403) under repeated hits
+    # from the same host; one short-backoff retry recovers most of these.
+    for attempt in range(2):
+        resp = httpx.get(proxy_url, timeout=READER_PROXY_TIMEOUT_S, follow_redirects=True, headers=_pick_headers())
+        if resp.status_code != 403 or attempt == 1:
+            break
+        time.sleep(2.5)
+
     if resp.status_code >= 400:
         raise httpx.HTTPStatusError(
             f"Reader proxy status {resp.status_code}", request=resp.request, response=resp

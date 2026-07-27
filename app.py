@@ -676,6 +676,11 @@ def _compose_summary_display(result: dict, target_language: str) -> tuple[str, s
     if result.get("show_min_hint"):
         translated = ("*Note: This page has minimal text (e.g. video/livestream). "
                       "Summary may be short.*\n\n") + translated
+    if result.get("scrape_degraded"):
+        translated = ("*Note: Could not fully extract this article's text (the site may "
+                      "block automated reading, or this is a redirect/aggregator link). "
+                      "For a reliable summary, paste the article text directly or use the "
+                      "publisher's direct URL instead of a Google News link.*\n\n") + translated
     return translated, engine
 
 # ── core summarize + analyse (all logic from original app.py) ─────────────────
@@ -708,15 +713,19 @@ def run_analysis(text, url, target_language, enable_browser_mode):
             source_text = text
             result["article_len"] = len(text)
             logger.info("scrape_ok ms=%.0f len=%d", (time.perf_counter()-t0)*1000, len(text))
-            if len(text) < MIN_TEXT_HINT_THRESHOLD:
-                result["show_min_hint"] = True
             meta = meta or {}
+            if len(text) < MIN_TEXT_HINT_THRESHOLD:
+                if (meta.get("scrape_error") or "").strip():
+                    result["scrape_degraded"] = True
+                else:
+                    result["show_min_hint"] = True
             result["meta"] = dict(
                 title     = (meta.get("title")   or "").strip(),
                 author    = (meta.get("author")  or "").strip(),
                 published = (meta.get("published") or "").strip(),
                 source    = (meta.get("source")  or urlparse(url).netloc or "").strip(),
                 scrape_mode = (meta.get("scrape_mode") or "").strip(),
+                scrape_error = (meta.get("scrape_error") or "").strip(),
                 cache     = (meta.get("cache")   or "").strip(),
                 cache_backend = (meta.get("cache_backend") or "").strip(),
                 url       = url,

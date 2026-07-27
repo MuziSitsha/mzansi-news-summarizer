@@ -51,12 +51,28 @@ def classify_topic(text: str) -> str:
             "soccer",
             "football",
             "cricket",
+            "springbok",
             "springboks",
             "bafana",
             "proteas",
             "kaizer chiefs",
             "orlando pirates",
+            "mamelodi sundowns",
+            "supersport united",
+            "stellenbosch fc",
+            "banyana banyana",
             "premiership",
+            "psl",
+            "championship",
+            "tournament",
+            "wing-back",
+            "midfielder",
+            "striker",
+            "goalkeeper",
+            "goalscorer",
+            "hat-trick",
+            "relegation",
+            "transfer window",
         ],
     }
 
@@ -70,10 +86,6 @@ def classify_topic(text: str) -> str:
 
     best_topic, best_score = max(scores.items(), key=lambda kv: kv[1])
     if best_score <= 0:
-        return "Other"
-
-    # If everything is extremely weak, avoid an overconfident label.
-    if best_score == 1 and sum(scores.values()) == 1:
         return "Other"
 
     return best_topic

@@ -465,7 +465,7 @@ _EVSTOP = {"a","an","and","are","as","at","be","but","by","for","from","has","ha
            "she","that","the","their","them","they","this","to","was","we","were",
            "will","with","you","your"}
 
-def _truncate_at_word(s, limit=260):
+def _truncate_at_word(s, limit=380):
     s = (s or "").strip()
     if len(s) <= limit:
         return s
@@ -512,7 +512,7 @@ def _key_facts_from_article(text, summary, max_items=3):
         if key in seen:
             continue
         seen.add(key)
-        facts.append(s[:180] + "…" if len(s) > 180 else s)
+        facts.append(_truncate_at_word(s))
         if len(facts) >= max_items:
             break
 

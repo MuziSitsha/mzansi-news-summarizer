@@ -78,6 +78,10 @@ RSS_PREFETCH_TTL_S       = float(os.environ.get("RSS_PREFETCH_TTL_S", "300"))
 NLLB_MODEL_NAME          = os.environ.get("NLLB_MODEL_NAME", "facebook/nllb-200-distilled-600M")
 TRANSLATION_NUM_BEAMS    = int(os.environ.get("TRANSLATION_NUM_BEAMS", "2"))
 TRANSLATION_CACHE_TTL_S  = float(os.environ.get("TRANSLATION_CACHE_TTL_S", "3600"))
+# The local NLLB model is ~2.4GB of weights — loading it can OOM-kill the
+# whole process on memory-constrained hosts (e.g. Streamlit Cloud free tier).
+# Off by default; only enable where there's headroom to actually load it.
+ENABLE_LOCAL_NLLB        = str(os.environ.get("ENABLE_LOCAL_NLLB", "0")).strip() in {"1", "true", "True"}
 
 _executor = ThreadPoolExecutor(max_workers=1)
 
@@ -622,11 +626,26 @@ def _translate_summary(summary_en, target_language):
     if m_translated.strip().lower() != summary_en.strip().lower():
         return m_translated, m_note, "mymemory"
 
-    # 3) Local Facebook NLLB pipeline — last resort, but the only engine
-    # that natively supports Tshivenda. Only substitute a related language
-    # (_NLLB_FALLBACK_LANGUAGE) if the real target genuinely fails below.
-    tgt = LANG_TO_NLLB.get(target_language)
     fallback_lang = _NLLB_FALLBACK_LANGUAGE.get(target_language, "")
+
+    # 3) For languages with no online engine support at all (Tshivenda), try
+    # the closest related language through the same lightweight engines
+    # before ever considering the heavy local model below.
+    if fallback_lang:
+        fb_note = f"Used {fallback_lang} as closest available translation for {target_language}."
+        g2, _ = _translate_summary_google(summary_en, fallback_lang)
+        if g2.strip().lower() != summary_en.strip().lower():
+            return g2, fb_note, "google"
+        m2, _ = _translate_summary_mymemory(summary_en, fallback_lang)
+        if m2.strip().lower() != summary_en.strip().lower():
+            return m2, fb_note, "mymemory"
+
+    # 4) Local Facebook NLLB model — last resort. Disabled by default (see
+    # ENABLE_LOCAL_NLLB) since loading it can OOM-kill memory-constrained hosts.
+    if not ENABLE_LOCAL_NLLB:
+        return summary_en, f"Translation unavailable for {target_language} right now.", "none"
+
+    tgt = LANG_TO_NLLB.get(target_language)
     fallback_tgt = LANG_TO_NLLB.get(fallback_lang) if fallback_lang else None
     if not tgt:
         return summary_en, f"Translation not configured for {target_language}.", "none"

@@ -465,6 +465,16 @@ _EVSTOP = {"a","an","and","are","as","at","be","but","by","for","from","has","ha
            "she","that","the","their","them","they","this","to","was","we","were",
            "will","with","you","your"}
 
+def _truncate_at_word(s, limit=260):
+    s = (s or "").strip()
+    if len(s) <= limit:
+        return s
+    cut = s[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > limit * 0.6:
+        cut = cut[:last_space]
+    return cut.rstrip(",;:- ") + "…"
+
 def _evidence_sentences(text, summary, max_s=3):
     if not text or not summary: return []
     kws = [t for t in re.findall(r"[A-Za-z][A-Za-z\-']{2,}",summary.lower()) if t not in _EVSTOP]
@@ -484,7 +494,7 @@ def _evidence_sentences(text, summary, max_s=3):
         k = re.sub(r"\W+","",s.lower())
         if k not in seen:
             seen.add(k)
-            out.append((i, s[:180]+"…" if len(s)>180 else s))
+            out.append((i, _truncate_at_word(s)))
     return out
 
 def _key_facts_from_article(text, summary, max_items=3):
@@ -665,6 +675,25 @@ def _translate_summary(summary_en, target_language):
     except Exception:
         logger.exception("translate_failed target=%s model=nllb_local", target_language)
         return summary_en, "Translation unavailable for this language right now.", "none"
+
+def _translate_list(items, target_language):
+    if not items or target_language == "English":
+        return list(items)
+    out = []
+    for item in items:
+        translated, _note, _engine = _translate_summary(item, target_language)
+        out.append(translated)
+    return out
+
+def _translate_stakeholders(stakeholders, target_language):
+    if not stakeholders or target_language == "English":
+        return list(stakeholders)
+    out = []
+    for k, v in stakeholders:
+        tk, _note, _engine = _translate_summary(k, target_language)
+        tv, _note, _engine = _translate_summary(v, target_language)
+        out.append((tk, tv))
+    return out
 
 def _compose_summary_display(result: dict, target_language: str) -> tuple[str, str]:
     summary = (result.get("summary") or "").strip()
@@ -1648,6 +1677,12 @@ with tab_sum:
             if not res.get("error") and res.get("summary"):
                 res["target_language"] = current_lang
                 res["summary_display"], res["translation_engine"] = _compose_summary_display(res, current_lang)
+                res["key_facts_display"] = _translate_list(res.get("key_facts", []), current_lang)
+                evid_src = res.get("evidence", [])
+                translated_evid = _translate_list([s for _, s in evid_src], current_lang)
+                res["evidence_display"] = list(zip([i for i, _ in evid_src], translated_evid))
+                res["sa_impact_display"] = _translate_list(res.get("sa_impact", []), current_lang)
+                res["stakeholders_display"] = _translate_stakeholders(res.get("stakeholders", []), current_lang)
                 st.session_state["_result"] = res
 
             dark = _is_dark()
@@ -1673,7 +1708,7 @@ with tab_sum:
                            text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;">
                         Key Facts</div>
                       <ul style="margin:0;padding-left:18px;color:{txt};">
-                        {"".join(f'<li style="margin:5px 0;font-size:14px;">{html.escape(s)}</li>' for s in res["key_facts"])}
+                        {"".join(f'<li style="margin:5px 0;font-size:14px;">{html.escape(s)}</li>' for s in res.get("key_facts_display") or res["key_facts"])}
                       </ul>
                     </div>""", unsafe_allow_html=True)
 
@@ -1711,7 +1746,7 @@ with tab_sum:
                 )
 
                 # Evidence
-                evid = res.get("evidence",[])
+                evid = res.get("evidence_display") or res.get("evidence",[])
                 if evid:
                     items_html = "".join(
                         f'<li style="font-size:13px;margin:5px 0;color:{txt};">{html.escape(s)}</li>'
@@ -1728,7 +1763,7 @@ with tab_sum:
                 if res.get("sa_impact"):
                     items_html = "".join(
                         f'<li style="font-size:14px;margin:5px 0;color:{txt};">{html.escape(s)}</li>'
-                        for s in res["sa_impact"]
+                        for s in res.get("sa_impact_display") or res["sa_impact"]
                     )
                     st.markdown(f"""
                     <div class="meta-card card" style="background:rgba(255,184,28,.10);
@@ -1745,7 +1780,7 @@ with tab_sum:
                       <div class="mz-stk-tile">
                         <div class="mz-stk-k">{html.escape(k)}</div>
                         <div class="mz-stk-v">{html.escape(v)}</div>
-                      </div>""" for k,v in res["stakeholders"])
+                      </div>""" for k,v in (res.get("stakeholders_display") or res["stakeholders"]))
                     st.markdown(f"""
                     <div class="meta-card card" style="background:rgba(0,61,165,.10);
                          border-color:rgba(34,85,187,.30);">
